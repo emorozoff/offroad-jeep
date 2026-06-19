@@ -188,7 +188,7 @@ const DEFAULT_ENV = {
 };
 applyEnvironment(DEFAULT_ENV);
 
-// ------------------------------------------------------------------ [GROUND] (placeholder; replaced by terrain in M4)
+// ------------------------------------------------------------------ [GROUND] (flat placeholder; replaced by terrain in M4)
 const ground = new THREE.Mesh(
   new THREE.PlaneGeometry(800, 800, 1, 1),
   new THREE.MeshStandardMaterial({ color: 0x8a8f7a, roughness: 0.95, metalness: 0.0 })
@@ -197,20 +197,236 @@ ground.rotation.x = -Math.PI / 2;
 ground.receiveShadow = true;
 scene.add(ground);
 
-// A few reference boxes so motion/shadows are visible while there's no car yet.
-const refGroup = new THREE.Group();
-for (let i = 0; i < 6; i++) {
-  const s = 2 + i * 0.6;
-  const box = new THREE.Mesh(
-    new THREE.BoxGeometry(s, s, s),
-    new THREE.MeshStandardMaterial({ color: new THREE.Color().setHSL(i / 6, 0.5, 0.55), roughness: 0.7 })
+// Grid overlay so motion across the flat ground is clearly visible.
+const grid = new THREE.GridHelper(800, 160, 0x556070, 0x44505c);
+grid.position.y = 0.02;
+grid.material.transparent = true;
+grid.material.opacity = 0.35;
+scene.add(grid);
+
+// ------------------------------------------------------------------ [PHYSICS]
+const world = new CANNON.World();
+world.gravity.set(0, -9.82, 0);
+world.broadphase = new CANNON.SAPBroadphase(world);
+world.allowSleep = false;
+// RaycastVehicle grip comes from per-wheel frictionSlip, not contact friction —
+// keep default contact friction low so it doesn't fight the raycast model.
+world.defaultContactMaterial.friction = 0.1;
+
+const groundMaterial = new CANNON.Material('ground');
+const groundBody = new CANNON.Body({ mass: 0, material: groundMaterial });
+groundBody.addShape(new CANNON.Plane());
+groundBody.quaternion.setFromEuler(-Math.PI / 2, 0, 0); // normal +Y
+world.addBody(groundBody);
+
+const FIXED_STEP = 1 / 60;
+
+// ------------------------------------------------------------------ [VEHICLE CONFIG]
+// One config per vehicle (M7 adds more). Half-extents in metres; forces tuned for cannon-es.
+const VEHICLES = {
+  jeep: {
+    id: 'jeep', name: 'Джип',
+    bodyColor: 0x3f7d4a, cabinColor: 0x232a30, accent: 0xf2c14e,
+    mass: 150,
+    chassis: { hx: 0.95, hy: 0.38, hz: 1.95 },
+    cabin: { w: 1.45, h: 0.55, l: 1.7, x: 0, y: 0.46, z: -0.15 },
+    wheel: {
+      radius: 0.45, width: 0.36,
+      suspensionStiffness: 32, suspensionRestLength: 0.32, maxSuspensionTravel: 0.34,
+      frictionSlip: 2.8, dampingRelaxation: 2.4, dampingCompression: 4.3,
+      maxSuspensionForce: 100000, rollInfluence: 0.05,
+      customSlidingRotationalSpeed: -30, useCustomSlidingRotationalSpeed: true,
+    },
+    axleHalf: 1.0,        // wheel connection x distance from centre
+    wheelBaseFront: 1.45, // front wheel z (nose is +z)
+    wheelBaseRear: -1.45, // rear wheel z
+    connectY: 0.0,
+    comOffsetY: 0.34,     // raise collision box + visual above physics origin -> lower COM (anti-flip/wheelie)
+    engineForce: 1000, maxSteer: 0.55, brakeForce: 28, handbrakeForce: 90,
+    drive: 'awd',
+  },
+};
+
+// ------------------------------------------------------------------ [VEHICLE FACTORY]
+function buildChassisMesh(cfg) {
+  const g = new THREE.Group();
+  // Visual sits raised above the physics origin to match the COM-offset collision box.
+  const inner = new THREE.Group();
+  inner.position.y = cfg.comOffsetY || 0;
+  g.add(inner);
+  const c = cfg.chassis;
+  const body = new THREE.Mesh(
+    new THREE.BoxGeometry(c.hx * 2, c.hy * 2, c.hz * 2),
+    new THREE.MeshStandardMaterial({ color: cfg.bodyColor, roughness: 0.6, metalness: 0.1 })
   );
-  const a = (i / 6) * Math.PI * 2;
-  box.position.set(Math.cos(a) * 22, s / 2, Math.sin(a) * 22);
-  box.castShadow = true; box.receiveShadow = true;
-  refGroup.add(box);
+  body.castShadow = true; body.receiveShadow = true;
+  inner.add(body);
+
+  const cab = new THREE.Mesh(
+    new THREE.BoxGeometry(cfg.cabin.w, cfg.cabin.h, cfg.cabin.l),
+    new THREE.MeshStandardMaterial({ color: cfg.cabinColor, roughness: 0.45, metalness: 0.2 })
+  );
+  cab.position.set(cfg.cabin.x, cfg.cabin.y, cfg.cabin.z);
+  cab.castShadow = true; cab.receiveShadow = true;
+  inner.add(cab);
+
+  // Nose marker (points toward +z = forward) so orientation is unmistakable.
+  const nose = new THREE.Mesh(
+    new THREE.BoxGeometry(c.hx * 1.4, 0.18, 0.3),
+    new THREE.MeshStandardMaterial({ color: cfg.accent, roughness: 0.5, emissive: cfg.accent, emissiveIntensity: 0.15 })
+  );
+  nose.position.set(0, c.hy * 0.6, c.hz - 0.1);
+  nose.castShadow = true;
+  inner.add(nose);
+  return g;
 }
-scene.add(refGroup);
+
+function buildWheelMesh(cfg) {
+  const w = cfg.wheel;
+  const geo = new THREE.CylinderGeometry(w.radius, w.radius, w.width, 22);
+  geo.rotateZ(Math.PI / 2); // cylinder axis Y -> X (the wheel's spin/axle axis)
+  const tire = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ color: 0x15171a, roughness: 0.9 }));
+  tire.castShadow = true;
+  // Hub spokes so spin is visible.
+  const hub = new THREE.Mesh(
+    new THREE.BoxGeometry(w.width + 0.02, w.radius * 1.5, w.radius * 0.28),
+    new THREE.MeshStandardMaterial({ color: 0xb8bcc2, roughness: 0.4, metalness: 0.5 })
+  );
+  tire.add(hub);
+  return tire;
+}
+
+function createVehicle(cfg) {
+  const c = cfg.chassis;
+  const o = cfg.comOffsetY || 0;
+  const chassisShape = new CANNON.Box(new CANNON.Vec3(c.hx, c.hy, c.hz));
+  const chassisBody = new CANNON.Body({ mass: cfg.mass, material: new CANNON.Material('chassis') });
+  // Box sits above the body origin so the centre of mass is low (anti-flip / anti-wheelie).
+  chassisBody.addShape(chassisShape, new CANNON.Vec3(0, o, 0));
+  chassisBody.angularDamping = 0.4; // tame wild spin/flips a little
+
+  const vehicle = new CANNON.RaycastVehicle({
+    chassisBody,
+    indexRightAxis: 0,
+    indexUpAxis: 1,
+    indexForwardAxis: 2,
+  });
+
+  const w = cfg.wheel;
+  const baseWheel = {
+    radius: w.radius,
+    directionLocal: new CANNON.Vec3(0, -1, 0),
+    suspensionStiffness: w.suspensionStiffness,
+    suspensionRestLength: w.suspensionRestLength,
+    frictionSlip: w.frictionSlip,
+    dampingRelaxation: w.dampingRelaxation,
+    dampingCompression: w.dampingCompression,
+    maxSuspensionForce: w.maxSuspensionForce,
+    rollInfluence: w.rollInfluence,
+    axleLocal: new CANNON.Vec3(-1, 0, 0),
+    chassisConnectionPointLocal: new CANNON.Vec3(),
+    maxSuspensionTravel: w.maxSuspensionTravel,
+    customSlidingRotationalSpeed: w.customSlidingRotationalSpeed,
+    useCustomSlidingRotationalSpeed: w.useCustomSlidingRotationalSpeed,
+  };
+  // Order: 0 FL, 1 FR, 2 RL, 3 RR. Front = +z (nose).
+  // Connection Y is lifted by the COM offset so wheels keep their position relative to the box.
+  const cy = cfg.connectY + o;
+  const pts = [
+    [-cfg.axleHalf, cy, cfg.wheelBaseFront],
+    [ cfg.axleHalf, cy, cfg.wheelBaseFront],
+    [-cfg.axleHalf, cy, cfg.wheelBaseRear],
+    [ cfg.axleHalf, cy, cfg.wheelBaseRear],
+  ];
+  for (const p of pts) {
+    baseWheel.chassisConnectionPointLocal.set(p[0], p[1], p[2]);
+    vehicle.addWheel(baseWheel);
+  }
+  vehicle.addToWorld(world);
+
+  // Meshes
+  const chassisMesh = buildChassisMesh(cfg);
+  scene.add(chassisMesh);
+  const wheelMeshes = vehicle.wheelInfos.map(() => {
+    const m = buildWheelMesh(cfg);
+    scene.add(m);
+    return m;
+  });
+
+  const steerWheels = [0, 1];
+  const driveWheels = cfg.drive === 'fwd' ? [0, 1] : cfg.drive === 'rwd' ? [2, 3] : [0, 1, 2, 3];
+
+  return { config: cfg, chassisBody, vehicle, chassisMesh, wheelMeshes, steerWheels, driveWheels, steer: 0 };
+}
+
+function spawnVehicle(v, x, y, z, yaw = 0) {
+  const b = v.chassisBody;
+  b.position.set(x, y, z);
+  b.quaternion.setFromEuler(0, yaw, 0);
+  b.velocity.setZero();
+  b.angularVelocity.setZero();
+  v.steer = 0;
+}
+
+const player = createVehicle(VEHICLES.jeep);
+spawnVehicle(player, 0, 2.2, 0, 0);
+
+// Sync visual meshes to physics state.
+function syncVehicleMeshes(v) {
+  v.chassisMesh.position.copy(v.chassisBody.position);
+  v.chassisMesh.quaternion.copy(v.chassisBody.quaternion);
+  for (let i = 0; i < v.wheelMeshes.length; i++) {
+    v.vehicle.updateWheelTransform(i);
+    const t = v.vehicle.wheelInfos[i].worldTransform;
+    v.wheelMeshes[i].position.copy(t.position);
+    v.wheelMeshes[i].quaternion.copy(t.quaternion);
+  }
+}
+
+// ------------------------------------------------------------------ [INPUT]
+const keys = Object.create(null);
+const STOP_DEFAULT = new Set(['Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight']);
+window.addEventListener('keydown', (e) => { keys[e.code] = true; if (STOP_DEFAULT.has(e.code)) e.preventDefault(); });
+window.addEventListener('keyup', (e) => { keys[e.code] = false; });
+window.addEventListener('blur', () => { for (const k in keys) keys[k] = false; });
+const pressed = (...codes) => codes.some((c) => keys[c]);
+
+const _fwd = new CANNON.Vec3();
+function forwardSpeedOf(v) {
+  v.chassisBody.quaternion.vmult(new CANNON.Vec3(0, 0, 1), _fwd); // local +z in world
+  return v.chassisBody.velocity.dot(_fwd);
+}
+
+function applyVehicleControls(v, dt) {
+  const cfg = v.config;
+  const accel = pressed('KeyW', 'ArrowUp');
+  const back = pressed('KeyS', 'ArrowDown');
+  const left = pressed('KeyA', 'ArrowLeft');
+  const right = pressed('KeyD', 'ArrowRight');
+  const handbrake = pressed('Space');
+
+  // Smoothed steering.
+  const steerTarget = (left ? cfg.maxSteer : 0) - (right ? cfg.maxSteer : 0);
+  v.steer = damp(v.steer, steerTarget, 12, dt);
+  for (const i of v.steerWheels) v.vehicle.setSteeringValue(v.steer, i);
+
+  const fwd = forwardSpeedOf(v);
+  let engine = 0, brake = 0;
+  // Forward drive is -engineForce with this axis/connection layout (verified by test).
+  if (accel) engine = -cfg.engineForce;
+  else if (back) {
+    if (fwd > 1.0) brake = cfg.brakeForce;       // moving forward -> brake first
+    else engine = cfg.engineForce * 0.6;          // then reverse
+  }
+  // light engine braking / rolling resistance when coasting
+  if (!accel && !back && !handbrake) brake = 3;
+
+  for (let i = 0; i < 4; i++) {
+    v.vehicle.applyEngineForce(v.driveWheels.includes(i) ? engine : 0, i);
+    v.vehicle.setBrake(brake, i);
+  }
+  if (handbrake) { v.vehicle.setBrake(cfg.handbrakeForce, 2); v.vehicle.setBrake(cfg.handbrakeForce, 3); }
+}
 
 // ------------------------------------------------------------------ [RESIZE]
 function onResize() {
@@ -231,8 +447,9 @@ function animate(now) {
   lastTime = now;
   frame++;
 
-  // M1: gentle idle rotation of reference boxes so it's clearly alive.
-  refGroup.rotation.y += dt * 0.15;
+  applyVehicleControls(player, dt);
+  world.step(FIXED_STEP, dt, 3);
+  syncVehicleMeshes(player);
 
   renderer.render(scene, camera);
 }
@@ -245,9 +462,12 @@ requestAnimationFrame(() => {
 });
 
 // Expose handles for debugging / verification.
-Object.assign(DBG, { THREE, CANNON, scene, camera, renderer, applyEnvironment });
+Object.assign(DBG, {
+  THREE, CANNON, scene, camera, renderer, applyEnvironment,
+  world, player, keys, spawnVehicle, forwardSpeedOf,
+});
 Object.defineProperty(DBG, 'frame', { get: () => frame });
-console.log('[M1] engine ready · three', THREE.REVISION);
+console.log('[M2] physics + vehicle ready · three', THREE.REVISION);
 </script>
 </body>
 </html>
