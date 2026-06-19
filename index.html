@@ -131,7 +131,7 @@
   <div id="hints">
     <div class="row"><b>W A S D / ←↑↓→</b> газ · тормоз · руль</div>
     <div class="row"><b>Пробел</b> ручник</div>
-    <div class="row"><b>R</b> перевернуть / сброс</div>
+    <div class="row"><b>R</b> перевернуть / сброс&nbsp; <b class="k">M</b> звук</div>
     <div class="row"><b>Мышь</b> осмотреться&nbsp; <b class="k">колесо</b> зум</div>
   </div>
   <div id="speedo">
@@ -847,8 +847,9 @@ window.addEventListener('blur', () => { for (const k in keys) keys[k] = false; }
 const pressed = (...codes) => codes.some((c) => keys[c]);
 
 const _fwd = new CANNON.Vec3();
+const _localFwd = new CANNON.Vec3(0, 0, 1);
 function forwardSpeedOf(v) {
-  v.chassisBody.quaternion.vmult(new CANNON.Vec3(0, 0, 1), _fwd); // local +z in world
+  v.chassisBody.quaternion.vmult(_localFwd, _fwd); // local +z in world
   return v.chassisBody.velocity.dot(_fwd);
 }
 
@@ -1169,6 +1170,7 @@ function startGame() {
   menuEl.classList.add('hidden'); pauseEl.classList.add('hidden');
   hudEl.classList.remove('hidden');
   camCtl.lastManual = -1e9;
+  audio.init(); audio.resume(); // user gesture -> audio allowed
 }
 function openMenu() {
   gameState = 'menu';
@@ -1181,7 +1183,7 @@ function pauseGame() {
   document.getElementById('pauseInfo').textContent = `${currentMap.name} · ${player.config.name}`;
   pauseEl.classList.remove('hidden');
 }
-function resumeGame() { gameState = 'playing'; pauseEl.classList.add('hidden'); camCtl.lastManual = -1e9; }
+function resumeGame() { gameState = 'playing'; pauseEl.classList.add('hidden'); camCtl.lastManual = -1e9; audio.resume(); }
 
 document.getElementById('mapCards').addEventListener('click', (e) => { const c = e.target.closest('.card'); if (c) selectMap(c.dataset.id); });
 document.getElementById('vehCards').addEventListener('click', (e) => { const c = e.target.closest('.card'); if (c) selectVeh(c.dataset.id); });
@@ -1190,6 +1192,7 @@ document.getElementById('resumeBtn').addEventListener('click', resumeGame);
 document.getElementById('toMenuBtn').addEventListener('click', openMenu);
 window.addEventListener('keydown', (e) => {
   if (e.code === 'Escape') { if (gameState === 'playing') pauseGame(); else if (gameState === 'paused') resumeGame(); }
+  if (e.code === 'KeyM' && !e.repeat) audio.setMuted(!audio.muted);
 });
 
 // ------------------------------------------------------------------ [FX] particles, tire tracks, camera shake
@@ -1323,6 +1326,65 @@ function applyShake(dt) {
   }
 }
 
+// ------------------------------------------------------------------ [AUDIO] procedural WebAudio (no external assets)
+function makeAudio() {
+  let ctx, master, engineGain, eOsc, eOsc2, screechGain, started = false, muted = false;
+  function init() {
+    if (started) return;
+    try {
+      const AC = window.AudioContext || window.webkitAudioContext;
+      if (!AC) return;
+      ctx = new AC();
+      master = ctx.createGain(); master.gain.value = 0.55; master.connect(ctx.destination);
+      // engine: two detuned oscillators through a lowpass -> gain
+      engineGain = ctx.createGain(); engineGain.gain.value = 0;
+      const eFilter = ctx.createBiquadFilter(); eFilter.type = 'lowpass'; eFilter.frequency.value = 760;
+      eOsc = ctx.createOscillator(); eOsc.type = 'sawtooth'; eOsc.frequency.value = 60;
+      eOsc2 = ctx.createOscillator(); eOsc2.type = 'square'; eOsc2.frequency.value = 60; eOsc2.detune.value = 10;
+      eOsc.connect(eFilter); eOsc2.connect(eFilter); eFilter.connect(engineGain); engineGain.connect(master);
+      eOsc.start(); eOsc2.start();
+      // tire screech: looping white noise -> bandpass -> gain
+      const buf = ctx.createBuffer(1, ctx.sampleRate, ctx.sampleRate);
+      const d = buf.getChannelData(0); for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
+      const n = ctx.createBufferSource(); n.buffer = buf; n.loop = true;
+      const bp = ctx.createBiquadFilter(); bp.type = 'bandpass'; bp.frequency.value = 1700; bp.Q.value = 1.8;
+      screechGain = ctx.createGain(); screechGain.gain.value = 0;
+      n.connect(bp); bp.connect(screechGain); screechGain.connect(master); n.start();
+      started = true;
+    } catch (e) { /* audio unavailable -> silent */ }
+  }
+  function resume() { if (ctx && ctx.state === 'suspended') ctx.resume(); }
+  function update(v, playing) {
+    if (!started) return;
+    const t = ctx.currentTime;
+    const speed = Math.hypot(v.chassisBody.velocity.x, v.chassisBody.velocity.z);
+    const throttle = playing && pressed('KeyW', 'ArrowUp', 'KeyS', 'ArrowDown') ? 1 : 0;
+    const rpm = 0.18 + clamp(speed / (v.config.maxSpeed || 30), 0, 1) * 0.82;
+    const freq = 52 + rpm * 175 + throttle * 18;
+    eOsc.frequency.setTargetAtTime(freq, t, 0.06);
+    eOsc2.frequency.setTargetAtTime(freq * 1.01, t, 0.06);
+    const eg = playing ? (0.05 + rpm * 0.11 + throttle * 0.05) : 0;
+    engineGain.gain.setTargetAtTime(muted ? 0 : eg, t, 0.1);
+    let slide = 0;
+    if (playing && v.grounded && speed > 5) {
+      const turning = pressed('KeyA', 'KeyD', 'ArrowLeft', 'ArrowRight') ? 1 : 0;
+      const hb = pressed('Space') ? 1 : 0;
+      const lowGrip = v.surface ? clamp(1.5 - v.surface.frictionSlip, 0, 1) : 0;
+      slide = clamp((turning * 0.45 + hb) * (0.35 + lowGrip) * clamp(speed / 15, 0, 1), 0, 1);
+    }
+    screechGain.gain.setTargetAtTime(muted ? 0 : slide * 0.13, t, 0.08);
+  }
+  function thud(intensity) {
+    if (!started || muted) return;
+    const t = ctx.currentTime, o = ctx.createOscillator(), g = ctx.createGain();
+    o.type = 'sine'; o.frequency.setValueAtTime(130, t); o.frequency.exponentialRampToValueAtTime(38, t + 0.18);
+    g.gain.setValueAtTime(clamp(intensity, 0, 1) * 0.5, t); g.gain.exponentialRampToValueAtTime(0.001, t + 0.26);
+    o.connect(g); g.connect(master); o.start(); o.stop(t + 0.28);
+  }
+  return { init, resume, update, thud, setMuted: (m) => { muted = m; }, get muted() { return muted; }, get started() { return started; } };
+}
+const audio = makeAudio();
+
 // ------------------------------------------------------------------ [LOOP]
 let lastTime = performance.now();
 let frame = 0;
@@ -1352,7 +1414,7 @@ function animate(now) {
     const b = player.chassisBody;
     const gNow = (b.position.y - groundHeightAt(b.position.x, b.position.z)) < 1.35;
     if (gameState === 'playing' && gNow) {
-      if (player._wasAir && preVelY < -3) addShake(clamp(-preVelY * 0.035, 0, 1.0)); // hard landing
+      if (player._wasAir && preVelY < -3) { const imp = clamp(-preVelY * 0.04, 0, 1.0); addShake(imp); audio.thud(imp); } // hard landing
       else addShake(clamp((Math.abs(preVelY) - 3) * 0.008, 0, 0.08));               // bumps
     }
     player._wasAir = !gNow;
@@ -1364,6 +1426,7 @@ function animate(now) {
   updateCamera(player, dt, now);
   applyShake(dt);
   updateHUD(player);
+  audio.update(player, gameState === 'playing');
 
   renderer.render(scene, camera);
 }
@@ -1386,14 +1449,14 @@ Object.assign(DBG, {
   loadMap, MAPS, SURF, terrain, obstacles, currentMap,
   setVehicle, VEHICLES, VEHICLE_IDS,
   selection, startGame, openMenu, pauseGame, resumeGame, selectMap, selectVeh,
-  fxParticles, fxTracks, addShake,
+  fxParticles, fxTracks, addShake, audio,
   setSurface: (s) => { currentSurfaceAt = () => s; }, // test hook
 });
 Object.defineProperty(DBG, 'shakeAmt', { get: () => shakeAmt });
 Object.defineProperty(DBG, 'frame', { get: () => frame });
 Object.defineProperty(DBG, 'player', { get: () => player, configurable: true });
 Object.defineProperty(DBG, 'gameState', { get: () => gameState });
-console.log('[M9] fx (particles, tracks, shake) ready · three', THREE.REVISION);
+console.log('[M10] audio + polish ready · three', THREE.REVISION);
 </script>
 </body>
 </html>
