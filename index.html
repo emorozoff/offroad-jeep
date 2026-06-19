@@ -1016,6 +1016,7 @@ function onResize() {
   camera.aspect = w / h;
   camera.updateProjectionMatrix();
   renderer.setSize(w, h);
+  if (typeof fxParticles !== 'undefined') fxParticles.setScale(h * 0.5);
 }
 window.addEventListener('resize', onResize);
 
@@ -1243,7 +1244,8 @@ function makeParticles(max) {
     geo.attributes.pcolor.needsUpdate = true; geo.attributes.psize.needsUpdate = true;
   }
   function clear() { for (let i = 0; i < max; i++) { life[i]=0; alpha[i]=0; } geo.attributes.palpha.needsUpdate = true; }
-  return { spawn, update, clear, _count: () => { let n=0; for(let i=0;i<max;i++) if(life[i]>0) n++; return n; } };
+  function setScale(s) { mat.uniforms.uScale.value = s; }
+  return { spawn, update, clear, setScale, _count: () => { let n=0; for(let i=0;i<max;i++) if(life[i]>0) n++; return n; } };
 }
 
 function makeTracks(max) {
