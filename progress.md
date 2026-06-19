@@ -14,7 +14,13 @@
 - (M0) Выбран jsdelivr вместо esm.sh: корректно резолвит `three/addons/` subpath с trailing-slash и относительные импорты внутри аддонов.
 
 ## Майлстоуны
-- [ ] M1 — Скелет проекта и рендер-сцена
+- [x] **M1 — Скелет проекта и рендер-сцена** ✓ (2026-06-19)
+  - importmap (three r184 + cannon-es 0.20.0) грузится без ошибок; рендерер с тенями (PCFShadowMap), ACES tonemapping.
+  - Градиентное небо (sky dome shader), туман, hemisphere+directional свет, плоский пол, тени.
+  - Цикл рендера на `performance.now()` delta (без deprecated Clock/Timer), ресайз обновляет камеру и буфер.
+  - Оверлей ошибок (`#fatal`) + `window.__errors` для headless-проверки; `window.GAME` для дебага.
+  - Верификация Playwright: 0 ошибок/0 предупреждений, ~35fps, скриншот сцены с тенями, ресайз 900×600 → aspect 1.5 ✓.
+  - Решение: WebGL в headless Chrome требует `--use-angle=swiftshader --enable-unsafe-swiftshader`.
 - [ ] M2 — Физика и управляемая машина на плоскости
 - [ ] M3 — Камера от третьего лица, мышь, зум, HUD
 - [ ] M4 — Процедурный террейн (heightmap из шума)

@@ -1,0 +1,253 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no" />
+<link rel="icon" href="data:," />
+<title>Offroad Jeep — песочница</title>
+<style>
+  :root { --fg: #e8eef2; }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 100%; height: 100%; overflow: hidden; background: #0b0e13; }
+  #app { position: fixed; inset: 0; }
+  canvas { display: block; width: 100%; height: 100%; }
+
+  /* Loading overlay */
+  #loader {
+    position: fixed; inset: 0; display: flex; align-items: center; justify-content: center;
+    flex-direction: column; gap: 14px; background: #0b0e13; color: var(--fg);
+    font: 500 16px/1.4 system-ui, -apple-system, Segoe UI, Roboto, sans-serif; z-index: 50;
+    transition: opacity .5s ease; letter-spacing: .02em;
+  }
+  #loader .spinner {
+    width: 38px; height: 38px; border: 3px solid rgba(255,255,255,.15);
+    border-top-color: #6cc6ff; border-radius: 50%; animation: spin 1s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  #loader.hidden { opacity: 0; pointer-events: none; }
+
+  /* Fatal error overlay */
+  #fatal {
+    position: fixed; inset: 0; display: none; flex-direction: column; gap: 10px;
+    padding: 28px; background: rgba(20,6,8,.96); color: #ffd9d9; z-index: 100;
+    font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; overflow: auto;
+  }
+  #fatal h2 { font: 600 18px system-ui, sans-serif; color: #ff7676; }
+  #fatal pre { white-space: pre-wrap; word-break: break-word; }
+</style>
+</head>
+<body>
+<div id="app"></div>
+
+<div id="loader">
+  <div class="spinner"></div>
+  <div id="loaderText">Загрузка движка…</div>
+</div>
+
+<div id="fatal">
+  <h2>Ошибка</h2>
+  <pre id="fatalMsg"></pre>
+</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.184.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.184.0/examples/jsm/",
+    "cannon-es": "https://cdn.jsdelivr.net/npm/cannon-es@0.20.0/dist/cannon-es.js"
+  }
+}
+</script>
+
+<script>
+  // Surface any error to a visible overlay (also helps headless verification).
+  window.__errors = [];
+  function showFatal(msg) {
+    window.__errors.push(String(msg));
+    const el = document.getElementById('fatal');
+    const m = document.getElementById('fatalMsg');
+    if (m) m.textContent = window.__errors.join('\n\n');
+    if (el) el.style.display = 'flex';
+    const loader = document.getElementById('loader');
+    if (loader) loader.classList.add('hidden');
+  }
+  window.addEventListener('error', (e) => {
+    showFatal((e.error && e.error.stack) ? e.error.stack : (e.message || e));
+  });
+  window.addEventListener('unhandledrejection', (e) => {
+    const r = e.reason;
+    showFatal('Unhandled promise rejection:\n' + ((r && r.stack) ? r.stack : r));
+  });
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import * as CANNON from 'cannon-es';
+
+// =====================================================================================
+//  Offroad Jeep — single-file sandbox driving game
+//  Architecture (sections grow milestone by milestone):
+//    [CONFIG] maps & vehicles · [UTIL] math/noise · [ENGINE] renderer/scene/camera/light
+//    [SKY] gradient sky · [PHYSICS] world · [TERRAIN] · [VEHICLE] · [INPUT]
+//    [CAMERA] follow cam · [HUD] · [FX] particles · [GAME] state machine · [LOOP]
+// =====================================================================================
+
+// Expose for headless checks / debugging.
+const DBG = (window.GAME = {});
+
+// ------------------------------------------------------------------ [UTIL]
+const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
+const lerp = (a, b, t) => a + (b - a) * t;
+const damp = (a, b, lambda, dt) => lerp(a, b, 1 - Math.exp(-lambda * dt)); // frame-rate independent
+
+// ------------------------------------------------------------------ [ENGINE]
+const app = document.getElementById('app');
+
+const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFShadowMap;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.05;
+app.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+
+const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 2000);
+camera.position.set(0, 8, 16);
+camera.lookAt(0, 0, 0);
+
+// Lights — hemisphere fill + a directional sun that casts shadows.
+const hemi = new THREE.HemisphereLight(0xbfd9ff, 0x4a4233, 0.8);
+scene.add(hemi);
+
+const sun = new THREE.DirectionalLight(0xfff2e0, 2.0);
+sun.position.set(60, 90, 40);
+sun.castShadow = true;
+sun.shadow.mapSize.set(2048, 2048);
+sun.shadow.camera.near = 1;
+sun.shadow.camera.far = 400;
+const SH = 120; // shadow frustum half-size
+sun.shadow.camera.left = -SH; sun.shadow.camera.right = SH;
+sun.shadow.camera.top = SH; sun.shadow.camera.bottom = -SH;
+sun.shadow.bias = -0.0004;
+sun.shadow.normalBias = 0.03;
+scene.add(sun);
+scene.add(sun.target);
+
+// ------------------------------------------------------------------ [SKY]
+// Reusable gradient sky dome (per-map colors later). Renders behind everything.
+function makeSky(topColor, bottomColor) {
+  const geo = new THREE.SphereGeometry(1000, 32, 16);
+  const mat = new THREE.ShaderMaterial({
+    side: THREE.BackSide,
+    depthWrite: false,
+    uniforms: {
+      topColor: { value: new THREE.Color(topColor) },
+      bottomColor: { value: new THREE.Color(bottomColor) },
+      offset: { value: 80 },
+      exponent: { value: 0.7 },
+    },
+    vertexShader: `
+      varying vec3 vWorldPosition;
+      void main() {
+        vec4 wp = modelMatrix * vec4(position, 1.0);
+        vWorldPosition = wp.xyz;
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+      }`,
+    fragmentShader: `
+      uniform vec3 topColor; uniform vec3 bottomColor;
+      uniform float offset; uniform float exponent;
+      varying vec3 vWorldPosition;
+      void main() {
+        float h = normalize(vWorldPosition + vec3(0.0, offset, 0.0)).y;
+        float t = pow(clamp(h, 0.0, 1.0), exponent);
+        gl_FragColor = vec4(mix(bottomColor, topColor, t), 1.0);
+      }`,
+  });
+  return new THREE.Mesh(geo, mat);
+}
+
+// World environment configuration applied per scene (M1: a neutral "default" look).
+function applyEnvironment(env) {
+  if (scene.userData.sky) { scene.remove(scene.userData.sky); scene.userData.sky.geometry.dispose(); scene.userData.sky.material.dispose(); }
+  const sky = makeSky(env.skyTop, env.skyBottom);
+  scene.add(sky);
+  scene.userData.sky = sky;
+  scene.fog = new THREE.Fog(env.fog, env.fogNear, env.fogFar);
+  hemi.color.set(env.hemiSky); hemi.groundColor.set(env.hemiGround); hemi.intensity = env.hemiInt;
+  sun.color.set(env.sunColor); sun.intensity = env.sunInt;
+  sun.position.copy(env.sunPos);
+}
+
+const DEFAULT_ENV = {
+  skyTop: 0x2a5b9e, skyBottom: 0xbcd4ec, fog: 0xc4d4e4, fogNear: 60, fogFar: 700,
+  hemiSky: 0xbfd9ff, hemiGround: 0x6b5a40, hemiInt: 0.85,
+  sunColor: 0xfff2e0, sunInt: 2.0, sunPos: new THREE.Vector3(60, 90, 40),
+};
+applyEnvironment(DEFAULT_ENV);
+
+// ------------------------------------------------------------------ [GROUND] (placeholder; replaced by terrain in M4)
+const ground = new THREE.Mesh(
+  new THREE.PlaneGeometry(800, 800, 1, 1),
+  new THREE.MeshStandardMaterial({ color: 0x8a8f7a, roughness: 0.95, metalness: 0.0 })
+);
+ground.rotation.x = -Math.PI / 2;
+ground.receiveShadow = true;
+scene.add(ground);
+
+// A few reference boxes so motion/shadows are visible while there's no car yet.
+const refGroup = new THREE.Group();
+for (let i = 0; i < 6; i++) {
+  const s = 2 + i * 0.6;
+  const box = new THREE.Mesh(
+    new THREE.BoxGeometry(s, s, s),
+    new THREE.MeshStandardMaterial({ color: new THREE.Color().setHSL(i / 6, 0.5, 0.55), roughness: 0.7 })
+  );
+  const a = (i / 6) * Math.PI * 2;
+  box.position.set(Math.cos(a) * 22, s / 2, Math.sin(a) * 22);
+  box.castShadow = true; box.receiveShadow = true;
+  refGroup.add(box);
+}
+scene.add(refGroup);
+
+// ------------------------------------------------------------------ [RESIZE]
+function onResize() {
+  const w = window.innerWidth, h = window.innerHeight;
+  camera.aspect = w / h;
+  camera.updateProjectionMatrix();
+  renderer.setSize(w, h);
+}
+window.addEventListener('resize', onResize);
+
+// ------------------------------------------------------------------ [LOOP]
+let lastTime = performance.now();
+let frame = 0;
+function animate(now) {
+  requestAnimationFrame(animate);
+  if (now === undefined) now = performance.now();
+  const dt = Math.min((now - lastTime) / 1000, 1 / 20); // clamp to avoid huge steps after tab-out
+  lastTime = now;
+  frame++;
+
+  // M1: gentle idle rotation of reference boxes so it's clearly alive.
+  refGroup.rotation.y += dt * 0.15;
+
+  renderer.render(scene, camera);
+}
+animate();
+
+// Hide loader once first frame is scheduled.
+requestAnimationFrame(() => {
+  const loader = document.getElementById('loader');
+  if (loader && window.__errors.length === 0) loader.classList.add('hidden');
+});
+
+// Expose handles for debugging / verification.
+Object.assign(DBG, { THREE, CANNON, scene, camera, renderer, applyEnvironment });
+Object.defineProperty(DBG, 'frame', { get: () => frame });
+console.log('[M1] engine ready · three', THREE.REVISION);
+</script>
+</body>
+</html>

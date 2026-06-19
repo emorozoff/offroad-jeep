@@ -1,4 +1,7 @@
 .DS_Store
 node_modules/
 .verify/
+.playwright-mcp/
 *.log
+m*-scene.png
+verify-*.png
