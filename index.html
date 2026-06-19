@@ -61,6 +61,56 @@
   #surfaceTag .veh { color: #bfead0; font-weight: 600; }
   #surfaceTag .surf { color: #f2c14e; font-weight: 600; }
   #surfaceTag .sep { opacity: .4; margin: 0 8px; }
+
+  /* Menu + pause overlays */
+  #menu, #pause {
+    position: fixed; inset: 0; z-index: 40; display: flex; align-items: center; justify-content: center;
+    background: rgba(8,10,14,.5); backdrop-filter: blur(7px);
+    font: 500 14px/1.4 system-ui, -apple-system, Segoe UI, Roboto, sans-serif; color: var(--fg);
+  }
+  #menu.hidden, #pause.hidden { display: none; }
+  #menu .panel {
+    width: min(880px, 94vw); max-height: 94vh; overflow: auto; padding: 20px 30px 16px;
+    background: rgba(14,18,24,.82); border: 1px solid rgba(255,255,255,.1); border-radius: 18px;
+    box-shadow: 0 24px 70px rgba(0,0,0,.5);
+  }
+  .brand h1 { font: 800 34px/1 system-ui, sans-serif; letter-spacing: .12em; color: #fff; }
+  .brand p { margin-top: 5px; color: #9fb0c0; letter-spacing: .04em; }
+  .section { margin-top: 16px; }
+  .section .label { font-size: 12px; letter-spacing: .18em; text-transform: uppercase; color: #7f93a6; margin-bottom: 10px; }
+  .cards { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+  .card {
+    text-align: left; cursor: pointer; color: var(--fg);
+    background: rgba(255,255,255,.04); border: 1.5px solid rgba(255,255,255,.1); border-radius: 12px;
+    padding: 12px 14px; transition: border-color .15s, background .15s, transform .1s; font: inherit;
+  }
+  .card:hover { background: rgba(255,255,255,.08); }
+  .card.sel { border-color: #f2c14e; background: rgba(242,193,78,.1); }
+  .card .swatch { height: 46px; border-radius: 8px; margin-bottom: 9px; border: 1px solid rgba(0,0,0,.25); }
+  .card .cname { font-weight: 700; font-size: 15px; color: #fff; }
+  .card .cdesc { margin-top: 4px; font-size: 12px; line-height: 1.4; color: #9fb0c0; min-height: 42px; }
+  .card .stats { margin-top: 9px; display: grid; gap: 5px; }
+  .card .stat { display: grid; grid-template-columns: 64px 1fr; align-items: center; gap: 8px; font-size: 11px; color: #9fb0c0; }
+  .card .bar { height: 6px; border-radius: 3px; background: rgba(255,255,255,.1); overflow: hidden; }
+  .card .bar > i { display: block; height: 100%; width: calc(var(--v) * 100%); background: #6cc6ff; border-radius: 3px; }
+  .card .drive { margin-top: 7px; font-size: 11px; color: #bfead0; letter-spacing: .04em; }
+  .footer { margin-top: 14px; display: flex; align-items: center; gap: 18px; flex-wrap: wrap; }
+  .ctrlHint { font-size: 12px; color: #7f93a6; flex: 1; min-width: 220px; }
+  #startBtn, #resumeBtn, #toMenuBtn {
+    cursor: pointer; font: 700 15px system-ui, sans-serif; color: #10141a; background: #f2c14e;
+    border: none; border-radius: 10px; padding: 12px 26px; letter-spacing: .02em; transition: filter .15s, transform .1s;
+  }
+  #startBtn:hover, #resumeBtn:hover { filter: brightness(1.08); }
+  #startBtn:active, #resumeBtn:active { transform: translateY(1px); }
+  #pause .panel {
+    width: min(380px, 90vw); padding: 26px 28px; text-align: center;
+    background: rgba(14,18,24,.9); border: 1px solid rgba(255,255,255,.1); border-radius: 16px;
+    display: grid; gap: 12px;
+  }
+  #pause h2 { font: 700 24px system-ui, sans-serif; color: #fff; letter-spacing: .04em; }
+  #pause .pauseInfo { color: #9fb0c0; font-size: 13px; margin-bottom: 6px; }
+  #toMenuBtn.ghost { background: transparent; color: #cdd6dd; border: 1.5px solid rgba(255,255,255,.18); }
+  #toMenuBtn.ghost:hover { background: rgba(255,255,255,.06); }
 </style>
 </head>
 <body>
@@ -96,6 +146,27 @@
     </svg>
     <div id="speedNum">0</div>
     <div id="speedUnit">КМ/Ч</div>
+  </div>
+</div>
+
+<div id="menu">
+  <div class="panel">
+    <div class="brand"><h1>OFFROAD</h1><p>песочница на внедорожнике</p></div>
+    <div class="section"><div class="label">Карта</div><div class="cards" id="mapCards"></div></div>
+    <div class="section"><div class="label">Машина</div><div class="cards" id="vehCards"></div></div>
+    <div class="footer">
+      <button id="startBtn">Поехали&nbsp;→</button>
+      <div class="ctrlHint">WASD / стрелки — руль и газ · Пробел — ручник · R — сброс · мышь — обзор · колесо — зум</div>
+    </div>
+  </div>
+</div>
+
+<div id="pause" class="hidden">
+  <div class="panel">
+    <h2>Пауза</h2>
+    <div class="pauseInfo" id="pauseInfo"></div>
+    <button id="resumeBtn">Продолжить</button>
+    <button id="toMenuBtn" class="ghost">В меню</button>
   </div>
 </div>
 
@@ -833,7 +904,7 @@ function resetVehicle(v) {
   for (let i = 0; i < 4; i++) { v.vehicle.applyEngineForce(0, i); v.vehicle.setBrake(0, i); }
   v.steer = 0;
 }
-window.addEventListener('keydown', (e) => { if (e.code === 'KeyR' && !e.repeat) resetVehicle(player); });
+window.addEventListener('keydown', (e) => { if (e.code === 'KeyR' && !e.repeat && gameState === 'playing') resetVehicle(player); });
 
 // ------------------------------------------------------------------ [CAMERA] third-person follow
 const camCtl = {
@@ -931,7 +1002,7 @@ function updateHUD(v) {
   surfVehEl.textContent = v.config.name;
   if (v.surface) surfNameEl.textContent = v.surface.name;
 }
-hudEl.classList.remove('hidden'); // M8 will gate this behind the menu
+// HUD visibility is controlled by the game state (menu vs playing) in the [MENU] section.
 
 // ------------------------------------------------------------------ [RESIZE]
 function onResize() {
@@ -1015,6 +1086,105 @@ function setVehicle(id, atX = 0, atZ = 0, yaw = 0) {
   camCtl.az = Math.PI; camCtl.pitch = 0.34; camCtl.dist = 9.5; camCtl.lastManual = -1e9;
 }
 
+// ------------------------------------------------------------------ [MENU + STATE]
+let gameState = 'menu'; // 'menu' | 'playing' | 'paused'
+const selection = { mapId: 'desert', vehId: 'jeep' };
+
+const MAP_DESC = {
+  desert: 'Песчаные дюны и каньоны. Песок мягкий — машина скользит и теряет сцепление на крутых дюнах.',
+  winter: 'Замёрзшее озеро и снежные поля. Лёд — сильные заносы, снег — вязкий, тормозит.',
+  jungle: 'Сплошная грязь. Высокое сопротивление: машина буксует и скользит.',
+};
+const VEH_DESC = {
+  buggy: 'Лёгкий и быстрый. Задний привод — верткий, охотно срывается в занос.',
+  jeep: 'Сбалансированный вездеход. Полный привод, предсказуемый.',
+  truck: 'Тяжёлый и мощный. Большие колёса, длинноходная подвеска. Медленный, но устойчивый.',
+};
+
+const menuEl = document.getElementById('menu');
+const pauseEl = document.getElementById('pause');
+
+function vehStats() {
+  const ids = VEHICLE_IDS.map((id) => VEHICLES[id]);
+  const sp = ids.map((c) => c.maxSpeed), ac = ids.map((c) => c.engineForce / c.mass), gr = ids.map((c) => c.gripMul);
+  const nrm = (v, a) => { const lo = Math.min(...a), hi = Math.max(...a); return 0.22 + 0.78 * (hi > lo ? (v - lo) / (hi - lo) : 0.5); };
+  const out = {};
+  for (const c of ids) out[c.id] = { speed: nrm(c.maxSpeed, sp), accel: nrm(c.engineForce / c.mass, ac), grip: nrm(c.gripMul, gr) };
+  return out;
+}
+
+function buildMenu() {
+  const mapWrap = document.getElementById('mapCards');
+  mapWrap.innerHTML = '';
+  for (const id of ['desert', 'winter', 'jungle']) {
+    const m = MAPS[id];
+    const btn = document.createElement('button');
+    btn.className = 'card' + (id === selection.mapId ? ' sel' : '');
+    btn.dataset.type = 'map'; btn.dataset.id = id;
+    const top = '#' + new THREE.Color(m.env.skyTop).getHexString();
+    const bot = '#' + new THREE.Color(m.terrain.colorHigh).getHexString();
+    btn.innerHTML = `<div class="swatch" style="background:linear-gradient(160deg,${top},${bot})"></div>
+      <div class="cname">${m.name}</div><div class="cdesc">${MAP_DESC[id]}</div>`;
+    mapWrap.appendChild(btn);
+  }
+  const stats = vehStats();
+  const vehWrap = document.getElementById('vehCards');
+  vehWrap.innerHTML = '';
+  const driveLabel = { rwd: 'задний привод', fwd: 'передний привод', awd: 'полный привод' };
+  for (const id of VEHICLE_IDS) {
+    const c = VEHICLES[id], s = stats[id];
+    const btn = document.createElement('button');
+    btn.className = 'card' + (id === selection.vehId ? ' sel' : '');
+    btn.dataset.type = 'veh'; btn.dataset.id = id;
+    const bar = (lbl, v) => `<div class="stat"><span>${lbl}</span><div class="bar"><i style="--v:${v.toFixed(2)}"></i></div></div>`;
+    btn.innerHTML = `<div class="cname">${c.name}</div><div class="cdesc">${VEH_DESC[id]}</div>
+      <div class="stats">${bar('скорость', s.speed)}${bar('разгон', s.accel)}${bar('сцепление', s.grip)}</div>
+      <div class="drive">${driveLabel[c.drive]} · ${c.mass} кг</div>`;
+    vehWrap.appendChild(btn);
+  }
+}
+
+function selectMap(id) {
+  if (selection.mapId === id) return;
+  selection.mapId = id;
+  document.querySelectorAll('#mapCards .card').forEach((el) => el.classList.toggle('sel', el.dataset.id === id));
+  loadMap(MAPS[id]); // rebuild preview, current vehicle respawns on the new terrain
+}
+function selectVeh(id) {
+  if (selection.vehId === id) return;
+  selection.vehId = id;
+  document.querySelectorAll('#vehCards .card').forEach((el) => el.classList.toggle('sel', el.dataset.id === id));
+  setVehicle(id);
+}
+
+function startGame() {
+  gameState = 'playing';
+  menuEl.classList.add('hidden'); pauseEl.classList.add('hidden');
+  hudEl.classList.remove('hidden');
+  camCtl.lastManual = -1e9;
+}
+function openMenu() {
+  gameState = 'menu';
+  hudEl.classList.add('hidden'); pauseEl.classList.add('hidden');
+  menuEl.classList.remove('hidden');
+  setVehicle(selection.vehId); // reset car to spawn for the showcase
+}
+function pauseGame() {
+  gameState = 'paused';
+  document.getElementById('pauseInfo').textContent = `${currentMap.name} · ${player.config.name}`;
+  pauseEl.classList.remove('hidden');
+}
+function resumeGame() { gameState = 'playing'; pauseEl.classList.add('hidden'); camCtl.lastManual = -1e9; }
+
+document.getElementById('mapCards').addEventListener('click', (e) => { const c = e.target.closest('.card'); if (c) selectMap(c.dataset.id); });
+document.getElementById('vehCards').addEventListener('click', (e) => { const c = e.target.closest('.card'); if (c) selectVeh(c.dataset.id); });
+document.getElementById('startBtn').addEventListener('click', startGame);
+document.getElementById('resumeBtn').addEventListener('click', resumeGame);
+document.getElementById('toMenuBtn').addEventListener('click', openMenu);
+window.addEventListener('keydown', (e) => {
+  if (e.code === 'Escape') { if (gameState === 'playing') pauseGame(); else if (gameState === 'paused') resumeGame(); }
+});
+
 // ------------------------------------------------------------------ [LOOP]
 let lastTime = performance.now();
 let frame = 0;
@@ -1025,7 +1195,15 @@ function animate(now) {
   lastTime = now;
   frame++;
 
-  applyVehicleControls(player, dt);
+  if (gameState === 'playing') {
+    applyVehicleControls(player, dt);
+  } else {
+    // frozen in menu/pause: kill drive, hold brakes, ease steering straight
+    for (let i = 0; i < 4; i++) { player.vehicle.applyEngineForce(0, i); player.vehicle.setBrake(40, i); }
+    player.steer = damp(player.steer, 0, 8, dt);
+    for (const i of player.steerWheels) player.vehicle.setSteeringValue(player.steer, i);
+    if (gameState === 'menu') { camCtl.az += dt * 0.25; camCtl.lastManual = now; } // slow showcase orbit
+  }
   applySurface(player, dt);
   world.step(FIXED_STEP, dt, 3);
   syncVehicleMeshes(player);
@@ -1035,7 +1213,8 @@ function animate(now) {
   renderer.render(scene, camera);
 }
 
-loadMap(MAPS.desert); // initial map
+buildMenu();
+loadMap(MAPS[selection.mapId]); // initial preview (current vehicle = jeep)
 animate();
 
 // Hide loader once first frame is scheduled.
@@ -1051,11 +1230,13 @@ Object.assign(DBG, {
   camCtl, resetVehicle, groundHeightAt, slopeAt, buildTerrain, makeNoise,
   loadMap, MAPS, SURF, terrain, obstacles, currentMap,
   setVehicle, VEHICLES, VEHICLE_IDS,
+  selection, startGame, openMenu, pauseGame, resumeGame, selectMap, selectVeh,
   setSurface: (s) => { currentSurfaceAt = () => s; }, // test hook
 });
 Object.defineProperty(DBG, 'frame', { get: () => frame });
 Object.defineProperty(DBG, 'player', { get: () => player, configurable: true });
-console.log('[M7] vehicles ready · three', THREE.REVISION);
+Object.defineProperty(DBG, 'gameState', { get: () => gameState });
+console.log('[M8] menu + state machine ready · three', THREE.REVISION);
 </script>
 </body>
 </html>
