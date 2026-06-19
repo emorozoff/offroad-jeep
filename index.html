@@ -34,6 +34,26 @@
   }
   #fatal h2 { font: 600 18px system-ui, sans-serif; color: #ff7676; }
   #fatal pre { white-space: pre-wrap; word-break: break-word; }
+
+  /* HUD */
+  #hud { position: fixed; inset: 0; pointer-events: none; z-index: 30;
+    font: 500 13px/1.3 system-ui, -apple-system, Segoe UI, Roboto, sans-serif; color: var(--fg); }
+  #hud.hidden { display: none; }
+  #hints {
+    position: absolute; left: 16px; bottom: 16px; display: grid; gap: 5px;
+    background: rgba(12,16,22,.5); border: 1px solid rgba(255,255,255,.08);
+    border-radius: 10px; padding: 11px 13px; backdrop-filter: blur(6px);
+  }
+  #hints .row { white-space: nowrap; opacity: .92; }
+  #hints b { display: inline-block; min-width: 96px; color: #9fd0ff; font-weight: 600; }
+  #hints b.k { min-width: auto; padding: 0 2px; }
+  #speedo { position: absolute; right: 18px; bottom: 14px; width: 168px; height: 168px;
+    filter: drop-shadow(0 6px 18px rgba(0,0,0,.4)); }
+  #speedo svg { width: 100%; height: 100%; overflow: visible; display: block; }
+  #speedNum { position: absolute; left: 0; right: 0; bottom: 40px; text-align: center;
+    font: 700 30px/1 ui-monospace, SFMono-Regular, Menlo, monospace; color: #fff; }
+  #speedUnit { position: absolute; left: 0; right: 0; bottom: 26px; text-align: center;
+    font-size: 10px; letter-spacing: .14em; color: #9fb0c0; }
 </style>
 </head>
 <body>
@@ -47,6 +67,28 @@
 <div id="fatal">
   <h2>Ошибка</h2>
   <pre id="fatalMsg"></pre>
+</div>
+
+<div id="hud" class="hidden">
+  <div id="hints">
+    <div class="row"><b>W A S D / ←↑↓→</b> газ · тормоз · руль</div>
+    <div class="row"><b>Пробел</b> ручник</div>
+    <div class="row"><b>R</b> перевернуть / сброс</div>
+    <div class="row"><b>Мышь</b> осмотреться&nbsp; <b class="k">колесо</b> зум</div>
+  </div>
+  <div id="speedo">
+    <svg viewBox="0 0 200 200">
+      <path d="M 32.5 139 A 78 78 0 1 1 167.5 139" fill="none"
+            stroke="rgba(255,255,255,.12)" stroke-width="10" stroke-linecap="round"/>
+      <g id="speedoTicks"></g>
+      <g id="needle">
+        <polygon points="100,32 96,104 104,104" fill="#f2c14e"/>
+      </g>
+      <circle cx="100" cy="100" r="9" fill="#1a2027" stroke="#f2c14e" stroke-width="2"/>
+    </svg>
+    <div id="speedNum">0</div>
+    <div id="speedUnit">КМ/Ч</div>
+  </div>
 </div>
 
 <script type="importmap">
@@ -243,6 +285,7 @@ const VEHICLES = {
     connectY: 0.0,
     comOffsetY: 0.34,     // raise collision box + visual above physics origin -> lower COM (anti-flip/wheelie)
     engineForce: 1000, maxSteer: 0.55, brakeForce: 28, handbrakeForce: 90,
+    maxSpeed: 31, maxReverse: 13, // m/s caps (~112 / 47 km/h)
     drive: 'awd',
   },
 };
@@ -413,10 +456,11 @@ function applyVehicleControls(v, dt) {
   const fwd = forwardSpeedOf(v);
   let engine = 0, brake = 0;
   // Forward drive is -engineForce with this axis/connection layout (verified by test).
-  if (accel) engine = -cfg.engineForce;
-  else if (back) {
-    if (fwd > 1.0) brake = cfg.brakeForce;       // moving forward -> brake first
-    else engine = cfg.engineForce * 0.6;          // then reverse
+  if (accel) {
+    if (fwd < cfg.maxSpeed) engine = -cfg.engineForce; // cut engine past top speed
+  } else if (back) {
+    if (fwd > 1.0) brake = cfg.brakeForce;             // moving forward -> brake first
+    else if (-fwd < cfg.maxReverse) engine = cfg.engineForce * 0.6; // then reverse, capped
   }
   // light engine braking / rolling resistance when coasting
   if (!accel && !back && !handbrake) brake = 3;
@@ -427,6 +471,119 @@ function applyVehicleControls(v, dt) {
   }
   if (handbrake) { v.vehicle.setBrake(cfg.handbrakeForce, 2); v.vehicle.setBrake(cfg.handbrakeForce, 3); }
 }
+
+// ------------------------------------------------------------------ [GROUND HEIGHT] (flat for now; terrain in M4)
+function groundHeightAt(x, z) { return 0; }
+
+// ------------------------------------------------------------------ [RESET]  (R key)
+const _resetFwd = new THREE.Vector3();
+const _resetQ = new THREE.Quaternion();
+function resetVehicle(v) {
+  const b = v.chassisBody;
+  _resetQ.copy(b.quaternion);
+  _resetFwd.set(0, 0, 1).applyQuaternion(_resetQ);
+  const yaw = Math.atan2(_resetFwd.x, _resetFwd.z);
+  const x = b.position.x, z = b.position.z;
+  b.position.set(x, groundHeightAt(x, z) + 2.0, z);
+  b.quaternion.setFromEuler(0, yaw, 0);
+  b.velocity.setZero();
+  b.angularVelocity.setZero();
+  for (let i = 0; i < 4; i++) { v.vehicle.applyEngineForce(0, i); v.vehicle.setBrake(0, i); }
+  v.steer = 0;
+}
+window.addEventListener('keydown', (e) => { if (e.code === 'KeyR' && !e.repeat) resetVehicle(player); });
+
+// ------------------------------------------------------------------ [CAMERA] third-person follow
+const camCtl = {
+  az: Math.PI, pitch: 0.34, dist: 9.5, minDist: 4.5, maxDist: 24,
+  target: new THREE.Vector3(), lastManual: -1e9, dragging: false,
+};
+const _camQ = new THREE.Quaternion();
+const _camFwd = new THREE.Vector3();
+const _camDir = new THREE.Vector3();
+const _camDesired = new THREE.Vector3();
+
+function shortestAngleLerp(a, b, t) {
+  let d = (b - a) % (Math.PI * 2);
+  if (d > Math.PI) d -= Math.PI * 2; else if (d < -Math.PI) d += Math.PI * 2;
+  return a + d * t;
+}
+
+function updateCamera(v, dt, now) {
+  const b = v.chassisBody;
+  _camQ.copy(b.quaternion);
+  _camFwd.set(0, 0, 1).applyQuaternion(_camQ);
+  const carYaw = Math.atan2(_camFwd.x, _camFwd.z);
+  const autoAz = carYaw + Math.PI; // sit behind the nose
+
+  const speed = Math.hypot(b.velocity.x, b.velocity.z);
+  if (!camCtl.dragging && (now - camCtl.lastManual) > 1300 && speed > 2.2) {
+    const k = 1 - Math.exp(-3.0 * dt);
+    camCtl.az = shortestAngleLerp(camCtl.az, autoAz, k);
+    camCtl.pitch = lerp(camCtl.pitch, 0.34, k * 0.6);
+  }
+
+  const cp = Math.cos(camCtl.pitch), sp = Math.sin(camCtl.pitch);
+  _camDir.set(Math.sin(camCtl.az) * cp, sp, Math.cos(camCtl.az) * cp);
+  camCtl.target.set(b.position.x, b.position.y + 1.05, b.position.z);
+  _camDesired.copy(camCtl.target).addScaledVector(_camDir, camCtl.dist);
+
+  camera.position.x = damp(camera.position.x, _camDesired.x, 9, dt);
+  camera.position.y = damp(camera.position.y, _camDesired.y, 9, dt);
+  camera.position.z = damp(camera.position.z, _camDesired.z, 9, dt);
+  camera.position.y = Math.max(camera.position.y, groundHeightAt(camera.position.x, camera.position.z) + 0.6);
+  camera.lookAt(camCtl.target);
+}
+
+(function bindCameraInput() {
+  const el = renderer.domElement;
+  el.addEventListener('mousedown', (e) => { if (e.button === 0) { camCtl.dragging = true; camCtl.lastManual = performance.now(); } });
+  window.addEventListener('mouseup', () => { if (camCtl.dragging) { camCtl.dragging = false; camCtl.lastManual = performance.now(); } });
+  window.addEventListener('mousemove', (e) => {
+    if (!camCtl.dragging) return;
+    camCtl.az -= e.movementX * 0.005;
+    camCtl.pitch = clamp(camCtl.pitch - e.movementY * 0.005, 0.06, 1.35);
+    camCtl.lastManual = performance.now();
+  });
+  el.addEventListener('wheel', (e) => {
+    e.preventDefault();
+    camCtl.dist = clamp(camCtl.dist + e.deltaY * 0.012, camCtl.minDist, camCtl.maxDist);
+  }, { passive: false });
+  el.addEventListener('contextmenu', (e) => e.preventDefault());
+})();
+
+// ------------------------------------------------------------------ [HUD]
+const hudEl = document.getElementById('hud');
+const needleEl = document.getElementById('needle');
+const speedNumEl = document.getElementById('speedNum');
+const HUD_MAX_KMH = 140;
+(function buildSpeedoTicks() {
+  const g = document.getElementById('speedoTicks');
+  const NS = 'http://www.w3.org/2000/svg';
+  for (let i = 0; i <= 7; i++) {
+    const t = i / 7, ang = (-120 + t * 240) * Math.PI / 180;
+    const s = (r) => [100 + Math.sin(ang) * r, 100 - Math.cos(ang) * r];
+    const [x1, y1] = s(70), [x2, y2] = s(80);
+    const line = document.createElementNS(NS, 'line');
+    line.setAttribute('x1', x1); line.setAttribute('y1', y1);
+    line.setAttribute('x2', x2); line.setAttribute('y2', y2);
+    line.setAttribute('stroke', 'rgba(255,255,255,.55)'); line.setAttribute('stroke-width', '2');
+    g.appendChild(line);
+    const [lx, ly] = s(57);
+    const txt = document.createElementNS(NS, 'text');
+    txt.setAttribute('x', lx); txt.setAttribute('y', ly + 4); txt.setAttribute('text-anchor', 'middle');
+    txt.setAttribute('font-size', '11'); txt.setAttribute('fill', '#9fb0c0');
+    txt.textContent = i * 20;
+    g.appendChild(txt);
+  }
+})();
+function updateHUD(v) {
+  const kmh = Math.hypot(v.chassisBody.velocity.x, v.chassisBody.velocity.z) * 3.6;
+  speedNumEl.textContent = Math.round(kmh);
+  const t = clamp(kmh / HUD_MAX_KMH, 0, 1);
+  needleEl.setAttribute('transform', `rotate(${(-120 + t * 240).toFixed(1)} 100 100)`);
+}
+hudEl.classList.remove('hidden'); // M8 will gate this behind the menu
 
 // ------------------------------------------------------------------ [RESIZE]
 function onResize() {
@@ -450,6 +607,8 @@ function animate(now) {
   applyVehicleControls(player, dt);
   world.step(FIXED_STEP, dt, 3);
   syncVehicleMeshes(player);
+  updateCamera(player, dt, now);
+  updateHUD(player);
 
   renderer.render(scene, camera);
 }
@@ -465,9 +624,10 @@ requestAnimationFrame(() => {
 Object.assign(DBG, {
   THREE, CANNON, scene, camera, renderer, applyEnvironment,
   world, player, keys, spawnVehicle, forwardSpeedOf,
+  camCtl, resetVehicle, groundHeightAt,
 });
 Object.defineProperty(DBG, 'frame', { get: () => frame });
-console.log('[M2] physics + vehicle ready · three', THREE.REVISION);
+console.log('[M3] camera + HUD + reset ready · three', THREE.REVISION);
 </script>
 </body>
 </html>
