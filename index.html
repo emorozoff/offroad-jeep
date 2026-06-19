@@ -54,6 +54,12 @@
     font: 700 30px/1 ui-monospace, SFMono-Regular, Menlo, monospace; color: #fff; }
   #speedUnit { position: absolute; left: 0; right: 0; bottom: 26px; text-align: center;
     font-size: 10px; letter-spacing: .14em; color: #9fb0c0; }
+  #surfaceTag { position: absolute; top: 14px; left: 50%; transform: translateX(-50%);
+    background: rgba(12,16,22,.5); border: 1px solid rgba(255,255,255,.08); border-radius: 999px;
+    padding: 6px 14px; backdrop-filter: blur(6px); white-space: nowrap; }
+  #surfaceTag .map { color: #9fd0ff; font-weight: 600; }
+  #surfaceTag .surf { color: #f2c14e; font-weight: 600; }
+  #surfaceTag .sep { opacity: .4; margin: 0 8px; }
 </style>
 </head>
 <body>
@@ -70,6 +76,7 @@
 </div>
 
 <div id="hud" class="hidden">
+  <div id="surfaceTag"><span class="map">—</span><span class="sep">·</span>поверхность: <span class="surf">—</span></div>
   <div id="hints">
     <div class="row"><b>W A S D / ←↑↓→</b> газ · тормоз · руль</div>
     <div class="row"><b>Пробел</b> ручник</div>
@@ -290,7 +297,9 @@ function buildTerrain(P) {
     const rim = smoothstep(P.rimStart, 1.0, e) * P.rimHeight;
     // Flatten a disc around spawn so the car starts level.
     const flat = smoothstep(P.flatRadius, P.flatRadius + P.flatBlend, Math.hypot(wx, wz));
-    return (h + rim) * flat + P.baseHeight;
+    let out = (h + rim) * flat + P.baseHeight;
+    if (P.lakeLevel != null) out = Math.max(out, P.lakeLevel); // fill basins flat -> frozen lake
+    return out;
   }
 
   const matrix = [];
@@ -387,15 +396,7 @@ function buildTerrain(P) {
   return { params: P, N, es, half, matrix, minH, maxH, mesh, body: hfBody, wallBodies, heightAt };
 }
 
-const DEFAULT_TERRAIN = {
-  seed: 1337, gridSize: 128, elementSize: 2.0,
-  fbm: true, octaves: 5, lacunarity: 2.0, gain: 0.5, frequency: 0.018,
-  amplitude: 7, baseHeight: 0, ridged: false,
-  rimStart: 0.72, rimHeight: 26,
-  flatRadius: 9, flatBlend: 16,
-  colorLow: 0x5f5238, colorHigh: 0x9d8c63,
-};
-const terrain = buildTerrain(DEFAULT_TERRAIN);
+let terrain = null; // built per-map by loadMap()
 
 // ------------------------------------------------------------------ [OBSTACLES]
 // Solid wedge ramp (triangular prism): tapers to ground at the low (+z) tip, rises to H at
@@ -517,12 +518,54 @@ function buildObstacles(P) {
   return { group, rocks, ramps, logs, params: P };
 }
 
-const DEFAULT_OBSTACLES = {
-  seed: 99, range: terrain.half * 0.8, clearRadius: 16,
-  rocks: 60, ramps: 7, logs: 14,
-  rockColor: 0x8b8378, rampColor: 0x6e4a2f, logColor: 0x5b4326,
+let obstacles = null; // built per-map by loadMap()
+
+// ------------------------------------------------------------------ [SURFACES]
+// Per-surface driving feel. frictionSlip = wheel grip; drag = rolling resistance/viscosity
+// (force = -drag * mass * horizontalVelocity, applied only when grounded).
+const SURF = {
+  dirt: { id: 'dirt', name: 'грунт', frictionSlip: 2.8, drag: 0.15, dust: 0x8a7a55 },
+  sand: { id: 'sand', name: 'песок', frictionSlip: 1.8, drag: 0.45, slopeGripLoss: 2.4, minSlip: 0.55, dust: 0xd8be86 },
+  ice:  { id: 'ice',  name: 'лёд',   frictionSlip: 0.5, drag: 0.02, dust: 0xdfe9f2 },
+  snow: { id: 'snow', name: 'снег',  frictionSlip: 1.5, drag: 0.9,  dust: 0xeef4fb },
+  mud:  { id: 'mud',  name: 'грязь', frictionSlip: 1.15, drag: 1.2, dust: 0x6a4f2e },
 };
-const obstacles = buildObstacles(DEFAULT_OBSTACLES);
+
+// ------------------------------------------------------------------ [MAPS]
+const MAPS = {
+  desert: {
+    id: 'desert', name: 'Пустыня',
+    env: { skyTop: 0x3b6ea5, skyBottom: 0xe7cf9a, fog: 0xddc591, fogNear: 50, fogFar: 430,
+      hemiSky: 0xcfe0f0, hemiGround: 0xb89a63, hemiInt: 0.9, sunColor: 0xfff0d0, sunInt: 2.5, sunPos: new THREE.Vector3(80, 100, 30) },
+    terrain: { seed: 21, gridSize: 128, elementSize: 2.0, fbm: true, octaves: 4, lacunarity: 2.0, gain: 0.5, frequency: 0.011,
+      amplitude: 13, baseHeight: 0, ridged: false, rimStart: 0.74, rimHeight: 34, flatRadius: 11, flatBlend: 20,
+      colorLow: 0xb08a4f, colorHigh: 0xe7c987 },
+    obstacles: { seed: 21, rocks: 45, ramps: 8, logs: 3, rockColor: 0xbfa06a, rampColor: 0x9c7b46, logColor: 0x8a6a3c },
+    surfaceAt: () => SURF.sand,
+  },
+  winter: {
+    id: 'winter', name: 'Зима',
+    env: { skyTop: 0x8fb6df, skyBottom: 0xeaf2fb, fog: 0xdce8f2, fogNear: 55, fogFar: 480,
+      hemiSky: 0xdcebff, hemiGround: 0xaebfcf, hemiInt: 0.95, sunColor: 0xf0f5ff, sunInt: 1.7, sunPos: new THREE.Vector3(50, 80, 60) },
+    terrain: { seed: 7, gridSize: 128, elementSize: 2.0, fbm: true, octaves: 5, lacunarity: 2.0, gain: 0.5, frequency: 0.02,
+      amplitude: 6, baseHeight: 0, ridged: false, lakeLevel: -2.2, rimStart: 0.72, rimHeight: 22, flatRadius: 10, flatBlend: 18,
+      colorLow: 0xacc4d8, colorHigh: 0xf4f8fc },
+    obstacles: { seed: 7, rocks: 38, ramps: 7, logs: 16, rockColor: 0xcdd6dd, rampColor: 0x7a6a52, logColor: 0x6a5a44 },
+    surfaceAt: (x, z) => (groundHeightAt(x, z) <= -1.95 ? SURF.ice : SURF.snow), // lake (clamped to -2.2) -> ice
+  },
+  jungle: {
+    id: 'jungle', name: 'Джунгли',
+    env: { skyTop: 0x6f9277, skyBottom: 0xc2cfa8, fog: 0x8fa178, fogNear: 28, fogFar: 260,
+      hemiSky: 0xbcd0a0, hemiGround: 0x47502f, hemiInt: 0.85, sunColor: 0xfff3d6, sunInt: 1.6, sunPos: new THREE.Vector3(40, 75, -40) },
+    terrain: { seed: 55, gridSize: 128, elementSize: 2.0, fbm: true, octaves: 5, lacunarity: 2.1, gain: 0.5, frequency: 0.026,
+      amplitude: 7, baseHeight: 0, ridged: false, rimStart: 0.7, rimHeight: 28, flatRadius: 10, flatBlend: 16,
+      colorLow: 0x39431f, colorHigh: 0x728046 },
+    obstacles: { seed: 55, rocks: 50, ramps: 8, logs: 26, rockColor: 0x5d6b4a, rampColor: 0x5a4327, logColor: 0x4a3a22 },
+    surfaceAt: () => SURF.mud,
+  },
+};
+let currentMap = null;
+let currentSurfaceAt = null;
 
 // ------------------------------------------------------------------ [VEHICLE CONFIG]
 // One config per vehicle (M7 adds more). Half-extents in metres; forces tuned for cannon-es.
@@ -673,7 +716,7 @@ function spawnVehicle(v, x, y, z, yaw = 0) {
 }
 
 const player = createVehicle(VEHICLES.jeep);
-spawnVehicle(player, 0, groundHeightAt(0, 0) + 2.2, 0, 0);
+// initial spawn happens in loadMap() once a terrain exists
 
 // Sync visual meshes to physics state.
 function syncVehicleMeshes(v) {
@@ -735,6 +778,12 @@ function applyVehicleControls(v, dt) {
 
 // ------------------------------------------------------------------ [GROUND HEIGHT]
 function groundHeightAt(x, z) { return terrain.heightAt(x, z); }
+function slopeAt(x, z) {
+  const d = 2.0;
+  const hx = groundHeightAt(x + d, z) - groundHeightAt(x - d, z);
+  const hz = groundHeightAt(x, z + d) - groundHeightAt(x, z - d);
+  return Math.hypot(hx, hz) / (2 * d); // gradient magnitude
+}
 
 // ------------------------------------------------------------------ [RESET]  (R key)
 const _resetFwd = new THREE.Vector3();
@@ -838,11 +887,15 @@ const HUD_MAX_KMH = 140;
     g.appendChild(txt);
   }
 })();
+const surfMapEl = document.querySelector('#surfaceTag .map');
+const surfNameEl = document.querySelector('#surfaceTag .surf');
 function updateHUD(v) {
   const kmh = Math.hypot(v.chassisBody.velocity.x, v.chassisBody.velocity.z) * 3.6;
   speedNumEl.textContent = Math.round(kmh);
   const t = clamp(kmh / HUD_MAX_KMH, 0, 1);
   needleEl.setAttribute('transform', `rotate(${(-120 + t * 240).toFixed(1)} 100 100)`);
+  if (currentMap) surfMapEl.textContent = currentMap.name;
+  if (v.surface) surfNameEl.textContent = v.surface.name;
 }
 hudEl.classList.remove('hidden'); // M8 will gate this behind the menu
 
@@ -855,6 +908,60 @@ function onResize() {
 }
 window.addEventListener('resize', onResize);
 
+// ------------------------------------------------------------------ [SURFACE FX] per-frame grip + viscosity
+function applySurface(v, dt) {
+  if (!currentSurfaceAt) return;
+  const b = v.chassisBody;
+  const x = b.position.x, z = b.position.z;
+  const grounded = (b.position.y - groundHeightAt(x, z)) < 1.2;
+  const surf = currentSurfaceAt(x, z);
+  let slip = surf.frictionSlip;
+  if (surf.slopeGripLoss) // sand: lose grip on steep dunes
+    slip = Math.max(surf.minSlip || 0.5, slip * (1 - clamp(slopeAt(x, z) * surf.slopeGripLoss, 0, 0.65)));
+  for (let i = 0; i < 4; i++) v.vehicle.wheelInfos[i].frictionSlip = slip;
+  if (grounded && surf.drag > 0) { // rolling resistance / viscosity
+    b.force.x += -surf.drag * b.mass * b.velocity.x;
+    b.force.z += -surf.drag * b.mass * b.velocity.z;
+  }
+  v.surface = surf;
+  v.grounded = grounded;
+}
+
+// ------------------------------------------------------------------ [MAP LOADER]
+function disposeWorldContent() {
+  if (terrain) {
+    scene.remove(terrain.mesh);
+    terrain.mesh.geometry.dispose(); terrain.mesh.material.dispose();
+    world.removeBody(terrain.body);
+    for (const wb of terrain.wallBodies) world.removeBody(wb);
+  }
+  if (obstacles) {
+    scene.remove(obstacles.group);
+    const mats = new Set();
+    obstacles.group.traverse((o) => { if (o.geometry) o.geometry.dispose(); if (o.material) mats.add(o.material); });
+    mats.forEach((m) => m.dispose());
+    for (const arr of [obstacles.rocks, obstacles.ramps, obstacles.logs])
+      for (const o of arr) world.removeBody(o.body);
+  }
+}
+
+function loadMap(map) {
+  disposeWorldContent();
+  currentMap = map;
+  applyEnvironment(map.env);
+  terrain = buildTerrain(map.terrain);
+  obstacles = buildObstacles({ ...map.obstacles, range: terrain.half * 0.8, clearRadius: 16 });
+  currentSurfaceAt = map.surfaceAt;
+  if (player) {
+    spawnVehicle(player, 0, terrain.heightAt(0, 0) + 2.2, 0, 0);
+    camCtl.az = Math.PI; camCtl.pitch = 0.34; camCtl.dist = 9.5; camCtl.lastManual = -1e9;
+    // snap the camera behind immediately so we don't see it fly across the map
+    camera.position.set(0, terrain.heightAt(0, 0) + 6, -10);
+  }
+  DBG.terrain = terrain; DBG.obstacles = obstacles;
+  DBG.currentMap = currentMap; DBG.currentSurfaceAt = currentSurfaceAt;
+}
+
 // ------------------------------------------------------------------ [LOOP]
 let lastTime = performance.now();
 let frame = 0;
@@ -866,6 +973,7 @@ function animate(now) {
   frame++;
 
   applyVehicleControls(player, dt);
+  applySurface(player, dt);
   world.step(FIXED_STEP, dt, 3);
   syncVehicleMeshes(player);
   updateCamera(player, dt, now);
@@ -873,6 +981,8 @@ function animate(now) {
 
   renderer.render(scene, camera);
 }
+
+loadMap(MAPS.desert); // initial map
 animate();
 
 // Hide loader once first frame is scheduled.
@@ -885,10 +995,12 @@ requestAnimationFrame(() => {
 Object.assign(DBG, {
   THREE, CANNON, scene, camera, renderer, applyEnvironment,
   world, player, keys, spawnVehicle, forwardSpeedOf,
-  camCtl, resetVehicle, groundHeightAt, terrain, buildTerrain, makeNoise, obstacles,
+  camCtl, resetVehicle, groundHeightAt, slopeAt, buildTerrain, makeNoise,
+  loadMap, MAPS, SURF, terrain, obstacles, currentMap,
+  setSurface: (s) => { currentSurfaceAt = () => s; }, // test hook
 });
 Object.defineProperty(DBG, 'frame', { get: () => frame });
-console.log('[M5] obstacles ready · three', THREE.REVISION);
+console.log('[M6] maps + surfaces ready · three', THREE.REVISION);
 </script>
 </body>
 </html>

@@ -5,3 +5,4 @@ node_modules/
 *.log
 m*-scene.png
 verify-*.png
+verify-*.jpg
