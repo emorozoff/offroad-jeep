@@ -141,6 +141,7 @@ const DBG = (window.GAME = {});
 const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
 const lerp = (a, b, t) => a + (b - a) * t;
 const damp = (a, b, lambda, dt) => lerp(a, b, 1 - Math.exp(-lambda * dt)); // frame-rate independent
+const smoothstep = (e0, e1, x) => { const t = clamp((x - e0) / (e1 - e0), 0, 1); return t * t * (3 - 2 * t); };
 
 // ------------------------------------------------------------------ [ENGINE]
 const app = document.getElementById('app');
@@ -230,22 +231,6 @@ const DEFAULT_ENV = {
 };
 applyEnvironment(DEFAULT_ENV);
 
-// ------------------------------------------------------------------ [GROUND] (flat placeholder; replaced by terrain in M4)
-const ground = new THREE.Mesh(
-  new THREE.PlaneGeometry(800, 800, 1, 1),
-  new THREE.MeshStandardMaterial({ color: 0x8a8f7a, roughness: 0.95, metalness: 0.0 })
-);
-ground.rotation.x = -Math.PI / 2;
-ground.receiveShadow = true;
-scene.add(ground);
-
-// Grid overlay so motion across the flat ground is clearly visible.
-const grid = new THREE.GridHelper(800, 160, 0x556070, 0x44505c);
-grid.position.y = 0.02;
-grid.material.transparent = true;
-grid.material.opacity = 0.35;
-scene.add(grid);
-
 // ------------------------------------------------------------------ [PHYSICS]
 const world = new CANNON.World();
 world.gravity.set(0, -9.82, 0);
@@ -254,14 +239,162 @@ world.allowSleep = false;
 // RaycastVehicle grip comes from per-wheel frictionSlip, not contact friction —
 // keep default contact friction low so it doesn't fight the raycast model.
 world.defaultContactMaterial.friction = 0.1;
-
 const groundMaterial = new CANNON.Material('ground');
-const groundBody = new CANNON.Body({ mass: 0, material: groundMaterial });
-groundBody.addShape(new CANNON.Plane());
-groundBody.quaternion.setFromEuler(-Math.PI / 2, 0, 0); // normal +Y
-world.addBody(groundBody);
-
 const FIXED_STEP = 1 / 60;
+
+// ------------------------------------------------------------------ [NOISE] seeded value-noise FBM
+function makeNoise(seed) {
+  const s = (seed >>> 0) || 1;
+  function hash(ix, iy) {
+    let h = Math.imul(ix | 0, 374761393) ^ Math.imul(iy | 0, 668265263) ^ Math.imul(s, 1274126177);
+    h = Math.imul(h ^ (h >>> 13), 1274126177);
+    h ^= h >>> 16;
+    return (h >>> 0) / 4294967295;
+  }
+  function vnoise(x, y) {
+    const xi = Math.floor(x), yi = Math.floor(y), xf = x - xi, yf = y - yi;
+    const u = xf * xf * (3 - 2 * xf), v = yf * yf * (3 - 2 * yf);
+    const a = hash(xi, yi), b = hash(xi + 1, yi), c = hash(xi, yi + 1), d = hash(xi + 1, yi + 1);
+    return lerp(lerp(a, b, u), lerp(c, d, u), v); // 0..1
+  }
+  function fbm(x, y, oct, lac, gain) {
+    let amp = 1, fr = 1, sum = 0, norm = 0;
+    for (let i = 0; i < oct; i++) { sum += amp * vnoise(x * fr, y * fr); norm += amp; amp *= gain; fr *= lac; }
+    return sum / norm; // 0..1
+  }
+  return { vnoise, fbm };
+}
+
+// ------------------------------------------------------------------ [TERRAIN]
+// Builds a CANNON.Heightfield and a matching BufferGeometry from the SAME matrix and
+// SAME world-coordinate mapping, so collision and visuals can never diverge.
+// Mapping (heightfield rotated -90deg about X, body at (-half,0,half)):
+//   worldX = i*es - half ,  height = matrix[i][j] ,  worldZ = half - j*es
+function buildTerrain(P) {
+  const N = P.gridSize + 1;          // samples per side
+  const es = P.elementSize;
+  const half = (P.gridSize * es) / 2;
+  const noise = makeNoise(P.seed);
+
+  function heightFn(wx, wz) {
+    let n = P.fbm
+      ? noise.fbm(wx * P.frequency, wz * P.frequency, P.octaves, P.lacunarity, P.gain)
+      : noise.vnoise(wx * P.frequency, wz * P.frequency);
+    n = n * 2 - 1;                                   // -1..1
+    if (P.ridged) n = 1 - Math.abs(n);               // ridged: sharp valleys/dunes
+    let h = n * P.amplitude;
+    if (P.secondary) h += (noise.vnoise(wx * P.secondary.freq + 50, wz * P.secondary.freq + 50) - 0.5) * 2 * P.secondary.amp;
+    // Raised rim of hills to enclose the play area naturally.
+    const e = Math.max(Math.abs(wx), Math.abs(wz)) / half;
+    const rim = smoothstep(P.rimStart, 1.0, e) * P.rimHeight;
+    // Flatten a disc around spawn so the car starts level.
+    const flat = smoothstep(P.flatRadius, P.flatRadius + P.flatBlend, Math.hypot(wx, wz));
+    return (h + rim) * flat + P.baseHeight;
+  }
+
+  const matrix = [];
+  let minH = Infinity, maxH = -Infinity;
+  for (let i = 0; i < N; i++) {
+    matrix[i] = [];
+    for (let j = 0; j < N; j++) {
+      const wx = i * es - half, wz = half - j * es;
+      const h = heightFn(wx, wz);
+      matrix[i][j] = h;
+      if (h < minH) minH = h; if (h > maxH) maxH = h;
+    }
+  }
+
+  // --- Physics heightfield ---
+  const hfShape = new CANNON.Heightfield(matrix, { elementSize: es });
+  const hfBody = new CANNON.Body({ mass: 0, material: groundMaterial });
+  hfBody.addShape(hfShape);
+  hfBody.quaternion.setFromEuler(-Math.PI / 2, 0, 0);
+  hfBody.position.set(-half, 0, half);
+  world.addBody(hfBody);
+
+  // --- Visual mesh (same matrix + same mapping) ---
+  const verts = new Float32Array(N * N * 3);
+  const cols = new Float32Array(N * N * 3);
+  const cLow = new THREE.Color(P.colorLow), cHigh = new THREE.Color(P.colorHigh);
+  const tmpC = new THREE.Color();
+  const range = Math.max(0.001, maxH - minH);
+  for (let i = 0; i < N; i++) {
+    for (let j = 0; j < N; j++) {
+      const k = (i * N + j) * 3;
+      const h = matrix[i][j];
+      verts[k] = i * es - half; verts[k + 1] = h; verts[k + 2] = half - j * es;
+      const t = clamp((h - minH) / range, 0, 1);
+      tmpC.copy(cLow).lerp(cHigh, Math.pow(t, 0.8));
+      cols[k] = tmpC.r; cols[k + 1] = tmpC.g; cols[k + 2] = tmpC.b;
+    }
+  }
+  const idx = [];
+  for (let i = 0; i < N - 1; i++) {
+    for (let j = 0; j < N - 1; j++) {
+      const a = i * N + j, b = (i + 1) * N + j, c = i * N + (j + 1), d = (i + 1) * N + (j + 1);
+      idx.push(a, b, c, c, b, d);
+    }
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(verts, 3));
+  geo.setAttribute('color', new THREE.BufferAttribute(cols, 3));
+  geo.setIndex(idx);
+  geo.computeVertexNormals();
+  // Ensure normals face up; if the winding produced downward normals, flip indices.
+  {
+    const na = geo.getAttribute('normal');
+    let upSum = 0; for (let v = 0; v < na.count; v += Math.max(1, (na.count / 200) | 0)) upSum += na.getY(v);
+    if (upSum < 0) {
+      const arr = geo.getIndex().array;
+      for (let t = 0; t < arr.length; t += 3) { const m = arr[t + 1]; arr[t + 1] = arr[t + 2]; arr[t + 2] = m; }
+      geo.getIndex().needsUpdate = true;
+      geo.computeVertexNormals();
+    }
+  }
+  const mat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 1.0, metalness: 0.0, flatShading: false });
+  const mesh = new THREE.Mesh(geo, mat);
+  mesh.receiveShadow = true; mesh.castShadow = true;
+  scene.add(mesh);
+
+  // --- Invisible perimeter walls (backstop beyond the rim) ---
+  const wallBodies = [];
+  const wallH = (maxH - minH) + 40, wallT = 4, len = half + wallT;
+  const wallSpec = [
+    [0, wallH / 2, half + wallT, len, wallH, wallT],
+    [0, wallH / 2, -half - wallT, len, wallH, wallT],
+    [half + wallT, wallH / 2, 0, wallT, wallH, len],
+    [-half - wallT, wallH / 2, 0, wallT, wallH, len],
+  ];
+  for (const [x, y, z, sx, sy, sz] of wallSpec) {
+    const wb = new CANNON.Body({ mass: 0, material: groundMaterial });
+    wb.addShape(new CANNON.Box(new CANNON.Vec3(sx, sy, sz)));
+    wb.position.set(x, y, z);
+    world.addBody(wb);
+    wallBodies.push(wb);
+  }
+
+  function heightAt(x, z) {
+    let fi = clamp((x + half) / es, 0, N - 1), fj = clamp((half - z) / es, 0, N - 1);
+    const i0 = Math.floor(fi), j0 = Math.floor(fj);
+    const i1 = Math.min(i0 + 1, N - 1), j1 = Math.min(j0 + 1, N - 1);
+    const ti = fi - i0, tj = fj - j0;
+    const a = lerp(matrix[i0][j0], matrix[i1][j0], ti);
+    const b = lerp(matrix[i0][j1], matrix[i1][j1], ti);
+    return lerp(a, b, tj);
+  }
+
+  return { params: P, N, es, half, matrix, minH, maxH, mesh, body: hfBody, wallBodies, heightAt };
+}
+
+const DEFAULT_TERRAIN = {
+  seed: 1337, gridSize: 128, elementSize: 2.0,
+  fbm: true, octaves: 5, lacunarity: 2.0, gain: 0.5, frequency: 0.018,
+  amplitude: 7, baseHeight: 0, ridged: false,
+  rimStart: 0.72, rimHeight: 26,
+  flatRadius: 9, flatBlend: 16,
+  colorLow: 0x5f5238, colorHigh: 0x9d8c63,
+};
+const terrain = buildTerrain(DEFAULT_TERRAIN);
 
 // ------------------------------------------------------------------ [VEHICLE CONFIG]
 // One config per vehicle (M7 adds more). Half-extents in metres; forces tuned for cannon-es.
@@ -412,7 +545,7 @@ function spawnVehicle(v, x, y, z, yaw = 0) {
 }
 
 const player = createVehicle(VEHICLES.jeep);
-spawnVehicle(player, 0, 2.2, 0, 0);
+spawnVehicle(player, 0, groundHeightAt(0, 0) + 2.2, 0, 0);
 
 // Sync visual meshes to physics state.
 function syncVehicleMeshes(v) {
@@ -472,8 +605,8 @@ function applyVehicleControls(v, dt) {
   if (handbrake) { v.vehicle.setBrake(cfg.handbrakeForce, 2); v.vehicle.setBrake(cfg.handbrakeForce, 3); }
 }
 
-// ------------------------------------------------------------------ [GROUND HEIGHT] (flat for now; terrain in M4)
-function groundHeightAt(x, z) { return 0; }
+// ------------------------------------------------------------------ [GROUND HEIGHT]
+function groundHeightAt(x, z) { return terrain.heightAt(x, z); }
 
 // ------------------------------------------------------------------ [RESET]  (R key)
 const _resetFwd = new THREE.Vector3();
@@ -624,10 +757,10 @@ requestAnimationFrame(() => {
 Object.assign(DBG, {
   THREE, CANNON, scene, camera, renderer, applyEnvironment,
   world, player, keys, spawnVehicle, forwardSpeedOf,
-  camCtl, resetVehicle, groundHeightAt,
+  camCtl, resetVehicle, groundHeightAt, terrain, buildTerrain, makeNoise,
 });
 Object.defineProperty(DBG, 'frame', { get: () => frame });
-console.log('[M3] camera + HUD + reset ready · three', THREE.REVISION);
+console.log('[M4] procedural terrain ready · three', THREE.REVISION);
 </script>
 </body>
 </html>
