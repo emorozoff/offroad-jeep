@@ -773,6 +773,47 @@ function buildVegetation(P) {
 }
 let vegetation = null;
 
+// ------------------------------------------------------------------ [PROPS] dynamic smashable crates
+function buildProps(P) {
+  const rng = mulberry32(((P.seed + 4242) * 2654435761) >>> 0);
+  const group = new THREE.Group(); scene.add(group);
+  const items = [];
+  const mat = new THREE.MeshStandardMaterial({ color: P.color || 0x9c6b3a, roughness: 0.82, metalness: 0.05 });
+  const geoCache = {};
+  function spot() {
+    for (let t = 0; t < 30; t++) {
+      const x = (rng() * 2 - 1) * P.range, z = (rng() * 2 - 1) * P.range;
+      if (Math.hypot(x, z) < P.clearRadius) continue;
+      if (slopeAt(x, z) > 0.12) continue;
+      return [x, z];
+    }
+    return null;
+  }
+  for (let c = 0; c < (P.clusters || 7); c++) {
+    const s0 = spot(); if (!s0) continue;
+    const [x, z] = s0, base = groundHeightAt(x, z), stack = 2 + (rng() * 3 | 0);
+    for (let k = 0; k < stack; k++) {
+      const sz = lerp(0.42, 0.66, rng());
+      const body = new CANNON.Body({ mass: 7, material: groundMaterial });
+      body.addShape(new CANNON.Box(new CANNON.Vec3(sz, sz, sz)));
+      body.position.set(x + (rng() - 0.5) * 0.25, base + sz + 0.04 + k * sz * 2.05, z + (rng() - 0.5) * 0.25);
+      body.angularDamping = 0.4; body.linearDamping = 0.04;
+      world.addBody(body);
+      const key = sz.toFixed(2);
+      const geo = geoCache[key] || (geoCache[key] = new THREE.BoxGeometry(sz * 2, sz * 2, sz * 2));
+      const mesh = new THREE.Mesh(geo, mat);
+      mesh.castShadow = true; mesh.receiveShadow = true; group.add(mesh);
+      items.push({ body, mesh });
+    }
+  }
+  return { group, items, mat, geos: geoCache };
+}
+let props = null;
+function syncProps() {
+  if (!props) return;
+  for (const it of props.items) { it.mesh.position.copy(it.body.position); it.mesh.quaternion.copy(it.body.quaternion); }
+}
+
 // ------------------------------------------------------------------ [SURFACES]
 // Per-surface driving feel. frictionSlip = wheel grip; drag = rolling resistance/viscosity
 // (force = -drag * mass * horizontalVelocity, applied only when grounded).
@@ -1374,6 +1415,12 @@ function disposeWorldContent() {
     for (const inst of vegetation.instances) inst.material.dispose(); // shared geos are cached, not disposed
     for (const b of vegetation.bodies) world.removeBody(b);
   }
+  if (props) {
+    scene.remove(props.group);
+    props.mat.dispose();
+    for (const k in props.geos) props.geos[k].dispose();
+    for (const it of props.items) world.removeBody(it.body);
+  }
 }
 
 function loadMap(map) {
@@ -1383,6 +1430,7 @@ function loadMap(map) {
   terrain = buildTerrain(map.terrain);
   obstacles = buildObstacles({ ...map.obstacles, range: terrain.half * 0.8, clearRadius: 16 });
   vegetation = buildVegetation({ seed: (map.obstacles && map.obstacles.seed) || 1, veg: map.veg, range: terrain.half * 0.85, clearRadius: 18 });
+  props = buildProps({ seed: (map.obstacles && map.obstacles.seed) || 1, range: terrain.half * 0.7, clearRadius: 22, clusters: 8, color: (map.obstacles && map.obstacles.rampColor) || 0x9c6b3a });
   currentSurfaceAt = map.surfaceAt;
   if (typeof fxParticles !== 'undefined') { fxParticles.clear(); fxTracks.clear(); _trackDist = 0; shakeAmt = 0; fxWeather.set(map.weather || null); }
   if (player) {
@@ -1876,6 +1924,7 @@ function animate(now) {
   applySurface(player, dt);
   world.step(FIXED_STEP, dt, 3);
   syncVehicleMeshes(player);
+  syncProps();
 
   // camera shake on landings (airborne -> grounded) and rough bumps
   {
@@ -1938,6 +1987,7 @@ Object.assign(DBG, {
 });
 Object.defineProperty(DBG, 'postEnabled', { get: () => POST_ENABLED });
 Object.defineProperty(DBG, 'vegetation', { get: () => vegetation });
+Object.defineProperty(DBG, 'props', { get: () => props });
 Object.defineProperty(DBG, 'camMode', { get: () => camMode });
 Object.defineProperty(DBG, 'headlightsManual', { get: () => headlightsManual, set: (v) => { headlightsManual = v; } });
 Object.defineProperty(DBG, 'shakeAmt', { get: () => shakeAmt });
