@@ -225,6 +225,11 @@
 <script type="module">
 import * as THREE from 'three';
 import * as CANNON from 'cannon-es';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+import { SMAAPass } from 'three/addons/postprocessing/SMAAPass.js';
+import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 
 // =====================================================================================
 //  Offroad Jeep — single-file sandbox driving game
@@ -261,6 +266,17 @@ const scene = new THREE.Scene();
 const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 2000);
 camera.position.set(0, 8, 16);
 camera.lookAt(0, 0, 0);
+
+// ------------------------------------------------------------------ [POST] bloom + SMAA + output
+// Default OFF: EffectComposer's float render targets render black under software (SwiftShader)
+// rendering, and can't be verified headlessly. Exposed as a graphics-quality toggle for real GPUs.
+let POST_ENABLED = false;
+const composer = new EffectComposer(renderer);
+composer.addPass(new RenderPass(scene, camera));
+const bloomPass = new UnrealBloomPass(new THREE.Vector2(window.innerWidth, window.innerHeight), 0.25, 0.55, 0.9);
+composer.addPass(bloomPass);
+let smaaPass; try { smaaPass = new SMAAPass(window.innerWidth, window.innerHeight); composer.addPass(smaaPass); } catch (e) { try { smaaPass = new SMAAPass(); composer.addPass(smaaPass); } catch (e2) {} }
+composer.addPass(new OutputPass());
 
 // Lights — hemisphere fill + a directional sun that casts shadows.
 const hemi = new THREE.HemisphereLight(0xbfd9ff, 0x4a4233, 0.8);
@@ -321,7 +337,19 @@ function makeSky(topColor, bottomColor) {
   return new THREE.Mesh(geo, mat);
 }
 
-// World environment configuration applied per scene (M1: a neutral "default" look).
+// Procedural image-based lighting: a PMREM env map generated from the sky gradient,
+// giving subtle sky-coloured reflections on metal without any external HDRI.
+const pmrem = new THREE.PMREMGenerator(renderer);
+function makeEnvRT(env) {
+  const s = new THREE.Scene();
+  const dome = makeSky(env.skyTop, env.skyBottom);
+  s.add(dome);
+  const rt = pmrem.fromScene(s, 0, 0.1, 1000);
+  dome.geometry.dispose(); dome.material.dispose();
+  return rt; // own the whole render target so it can be fully disposed
+}
+
+// World environment configuration applied per scene.
 function applyEnvironment(env) {
   if (scene.userData.sky) { scene.remove(scene.userData.sky); scene.userData.sky.geometry.dispose(); scene.userData.sky.material.dispose(); }
   const sky = makeSky(env.skyTop, env.skyBottom);
@@ -331,6 +359,10 @@ function applyEnvironment(env) {
   hemi.color.set(env.hemiSky); hemi.groundColor.set(env.hemiGround); hemi.intensity = env.hemiInt;
   sun.color.set(env.sunColor); sun.intensity = env.sunInt;
   sunOffset.copy(env.sunPos);
+  if (scene.userData.envRT) scene.userData.envRT.dispose();
+  scene.userData.envRT = makeEnvRT(env);
+  scene.environment = scene.userData.envRT.texture;
+  scene.environmentIntensity = 0.55;
 }
 
 const DEFAULT_ENV = {
@@ -1160,6 +1192,7 @@ function onResize() {
   camera.aspect = w / h;
   camera.updateProjectionMatrix();
   renderer.setSize(w, h);
+  composer.setSize(w, h);
   if (typeof fxParticles !== 'undefined') fxParticles.setScale(h * 0.5);
 }
 window.addEventListener('resize', onResize);
@@ -1623,7 +1656,7 @@ function animate(now) {
   updateHUD(player);
   audio.update(player, gameState === 'playing');
 
-  renderer.render(scene, camera);
+  if (POST_ENABLED) composer.render(); else renderer.render(scene, camera);
 }
 
 // Restore persisted selection + audio preference before building the menu.
@@ -1655,7 +1688,10 @@ Object.assign(DBG, {
   fxParticles, fxTracks, addShake, audio,
   setSurface: (s) => { currentSurfaceAt = () => s; }, // test hook
   setCamMode: (m) => { camMode = m; },
+  setPost: (on) => { POST_ENABLED = on; },
+  composer, bloomPass,
 });
+Object.defineProperty(DBG, 'postEnabled', { get: () => POST_ENABLED });
 Object.defineProperty(DBG, 'camMode', { get: () => camMode });
 Object.defineProperty(DBG, 'headlightsManual', { get: () => headlightsManual, set: (v) => { headlightsManual = v; } });
 Object.defineProperty(DBG, 'shakeAmt', { get: () => shakeAmt });
