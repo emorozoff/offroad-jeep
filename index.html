@@ -808,6 +808,7 @@ function createVehicle(cfg) {
   // Box sits above the body origin so the centre of mass is low (anti-flip / anti-wheelie).
   chassisBody.addShape(chassisShape, new CANNON.Vec3(0, o, 0));
   chassisBody.angularDamping = 0.4; // tame wild spin/flips a little
+  chassisBody.addEventListener('collide', onChassisCollide);
 
   const vehicle = new CANNON.RaycastVehicle({
     chassisBody,
@@ -1242,6 +1243,12 @@ function setVehicle(id, atX = 0, atZ = 0, yaw = 0) {
 let gameState = 'menu'; // 'menu' | 'playing' | 'paused'
 const selection = { mapId: 'desert', vehId: 'jeep' };
 
+// --- persistence (localStorage) ---
+const STORE_KEY = 'offroad_jeep_v1';
+function loadStore() { try { return JSON.parse(localStorage.getItem(STORE_KEY)) || {}; } catch (e) { return {}; } }
+function saveStore(patch) { try { localStorage.setItem(STORE_KEY, JSON.stringify({ ...loadStore(), ...patch })); } catch (e) {} }
+function uiClick() { audio.init(); audio.resume(); audio.blip(); }
+
 const MAP_DESC = {
   desert: 'Песчаные дюны и каньоны. Песок мягкий — машина скользит и теряет сцепление на крутых дюнах.',
   winter: 'Замёрзшее озеро и снежные поля. Лёд — сильные заносы, снег — вязкий, тормозит.',
@@ -1297,14 +1304,16 @@ function buildMenu() {
 }
 
 function selectMap(id) {
+  uiClick();
   if (selection.mapId === id) return;
-  selection.mapId = id;
+  selection.mapId = id; saveStore({ mapId: id });
   document.querySelectorAll('#mapCards .card').forEach((el) => el.classList.toggle('sel', el.dataset.id === id));
   loadMap(MAPS[id]); // rebuild preview, current vehicle respawns on the new terrain
 }
 function selectVeh(id) {
+  uiClick();
   if (selection.vehId === id) return;
-  selection.vehId = id;
+  selection.vehId = id; saveStore({ vehId: id });
   document.querySelectorAll('#vehCards .card').forEach((el) => el.classList.toggle('sel', el.dataset.id === id));
   setVehicle(id);
 }
@@ -1331,12 +1340,12 @@ function resumeGame() { gameState = 'playing'; pauseEl.classList.add('hidden'); 
 
 document.getElementById('mapCards').addEventListener('click', (e) => { const c = e.target.closest('.card'); if (c) selectMap(c.dataset.id); });
 document.getElementById('vehCards').addEventListener('click', (e) => { const c = e.target.closest('.card'); if (c) selectVeh(c.dataset.id); });
-document.getElementById('startBtn').addEventListener('click', startGame);
-document.getElementById('resumeBtn').addEventListener('click', resumeGame);
-document.getElementById('toMenuBtn').addEventListener('click', openMenu);
+document.getElementById('startBtn').addEventListener('click', () => { uiClick(); startGame(); });
+document.getElementById('resumeBtn').addEventListener('click', () => { uiClick(); resumeGame(); });
+document.getElementById('toMenuBtn').addEventListener('click', () => { uiClick(); openMenu(); });
 window.addEventListener('keydown', (e) => {
   if (e.code === 'Escape') { if (gameState === 'playing') pauseGame(); else if (gameState === 'paused') resumeGame(); }
-  if (e.code === 'KeyM' && !e.repeat) audio.setMuted(!audio.muted);
+  if (e.code === 'KeyM' && !e.repeat) { audio.setMuted(!audio.muted); saveStore({ muted: audio.muted }); }
   if (e.code === 'KeyL' && !e.repeat) {
     const auto = currentMap ? !!currentMap.darkLights : false;
     headlightsManual = (headlightsManual === null ? !auto : !headlightsManual);
@@ -1429,7 +1438,7 @@ function makeTracks(max) {
 }
 
 const fxParticles = makeParticles(500);
-const fxTracks = makeTracks(280);
+const fxTracks = makeTracks(420);
 let _trackDist = 0;
 const _wcp = new THREE.Vector3();
 
@@ -1451,14 +1460,14 @@ function updateWheelFX(v, dt) {
   }
   // tracks: lay marks at spacing along travel
   _trackDist += speed * dt;
-  if (speed > 2.5 && _trackDist > 0.6) {
+  if (speed > 2.5 && _trackDist > 0.38) {
     _trackDist = 0;
     fxTracks.setColor(surf.track);
     const f = new THREE.Vector3(0, 0, 1).applyQuaternion(_camQ.copy(b.quaternion));
     const yaw = Math.atan2(f.x, f.z);
     for (const wi of [2, 3]) {
       const m = v.wheelMeshes[wi];
-      fxTracks.lay(m.position.x, groundHeightAt(m.position.x, m.position.z), m.position.z, yaw, v.config.wheel.width * 1.3, v.config.wheel.radius * 2.2);
+      fxTracks.lay(m.position.x, groundHeightAt(m.position.x, m.position.z), m.position.z, yaw, v.config.wheel.width * 1.3, v.config.wheel.radius * 3.0);
     }
   }
 }
@@ -1477,7 +1486,7 @@ function applyShake(dt) {
 
 // ------------------------------------------------------------------ [AUDIO] procedural WebAudio (no external assets)
 function makeAudio() {
-  let ctx, master, engineGain, eOsc, eOsc2, screechGain, started = false, muted = false;
+  let ctx, master, engineGain, eOsc, eOsc2, screechGain, rollGain, rollLP, noiseBuf, started = false, muted = false;
   function init() {
     if (started) return;
     try {
@@ -1492,13 +1501,17 @@ function makeAudio() {
       eOsc2 = ctx.createOscillator(); eOsc2.type = 'square'; eOsc2.frequency.value = 60; eOsc2.detune.value = 10;
       eOsc.connect(eFilter); eOsc2.connect(eFilter); eFilter.connect(engineGain); engineGain.connect(master);
       eOsc.start(); eOsc2.start();
-      // tire screech: looping white noise -> bandpass -> gain
-      const buf = ctx.createBuffer(1, ctx.sampleRate, ctx.sampleRate);
-      const d = buf.getChannelData(0); for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
-      const n = ctx.createBufferSource(); n.buffer = buf; n.loop = true;
+      // shared looping white noise -> screech (bandpass) + rolling (lowpass)
+      noiseBuf = ctx.createBuffer(1, ctx.sampleRate, ctx.sampleRate);
+      const d = noiseBuf.getChannelData(0); for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
+      const n = ctx.createBufferSource(); n.buffer = noiseBuf; n.loop = true;
       const bp = ctx.createBiquadFilter(); bp.type = 'bandpass'; bp.frequency.value = 1700; bp.Q.value = 1.8;
       screechGain = ctx.createGain(); screechGain.gain.value = 0;
-      n.connect(bp); bp.connect(screechGain); screechGain.connect(master); n.start();
+      n.connect(bp); bp.connect(screechGain); screechGain.connect(master);
+      rollLP = ctx.createBiquadFilter(); rollLP.type = 'lowpass'; rollLP.frequency.value = 360;
+      rollGain = ctx.createGain(); rollGain.gain.value = 0;
+      n.connect(rollLP); rollLP.connect(rollGain); rollGain.connect(master);
+      n.start();
       started = true;
     } catch (e) { /* audio unavailable -> silent */ }
   }
@@ -1522,6 +1535,10 @@ function makeAudio() {
       slide = clamp((turning * 0.45 + hb) * (0.35 + lowGrip) * clamp(speed / 15, 0, 1), 0, 1);
     }
     screechGain.gain.setTargetAtTime(muted ? 0 : slide * 0.13, t, 0.08);
+    // tire rolling on surface — louder with speed; rougher surfaces a touch louder
+    const rough = v.surface ? (1 - clamp((v.surface.frictionSlip - 0.5) / 2.5, 0, 1)) * 0.4 + 0.6 : 0.7;
+    const roll = (playing && v.grounded) ? clamp(speed / 22, 0, 1) * 0.06 * rough : 0;
+    rollGain.gain.setTargetAtTime(muted ? 0 : roll, t, 0.1);
   }
   function thud(intensity) {
     if (!started || muted) return;
@@ -1530,7 +1547,34 @@ function makeAudio() {
     g.gain.setValueAtTime(clamp(intensity, 0, 1) * 0.5, t); g.gain.exponentialRampToValueAtTime(0.001, t + 0.26);
     o.connect(g); g.connect(master); o.start(); o.stop(t + 0.28);
   }
-  return { init, resume, update, thud, setMuted: (m) => { muted = m; }, get muted() { return muted; }, get started() { return started; } };
+  function hit(intensity) { // collision clack — short filtered noise burst
+    if (!started || muted || !noiseBuf) return;
+    const t = ctx.currentTime, s = ctx.createBufferSource(); s.buffer = noiseBuf; s.loop = true;
+    const bp = ctx.createBiquadFilter(); bp.type = 'bandpass'; bp.frequency.value = 900 + Math.random() * 500; bp.Q.value = 0.8;
+    const g = ctx.createGain(); g.gain.setValueAtTime(clamp(intensity, 0, 1) * 0.45, t); g.gain.exponentialRampToValueAtTime(0.001, t + 0.16);
+    s.connect(bp); bp.connect(g); g.connect(master); s.start(); s.stop(t + 0.18);
+  }
+  function blip() { // UI click
+    if (!started || muted) return;
+    const t = ctx.currentTime, o = ctx.createOscillator(), g = ctx.createGain();
+    o.type = 'triangle'; o.frequency.setValueAtTime(520, t); o.frequency.exponentialRampToValueAtTime(720, t + 0.05);
+    g.gain.setValueAtTime(0.12, t); g.gain.exponentialRampToValueAtTime(0.001, t + 0.09);
+    o.connect(g); g.connect(master); o.start(); o.stop(t + 0.1);
+  }
+  return { init, resume, update, thud, hit, blip, setMuted: (m) => { muted = m; }, get muted() { return muted; }, get started() { return started; } };
+}
+
+let _lastHit = 0;
+function onChassisCollide(e) {
+  if (gameState !== 'playing') return;
+  let impact = 0;
+  try { impact = Math.abs(e.contact.getImpactVelocityAlongNormal()); } catch (er) { return; }
+  const now = performance.now();
+  if (impact > 3.5 && now - _lastHit > 110) {
+    _lastHit = now;
+    const i = clamp((impact - 3.5) / 16, 0, 1);
+    audio.hit(i); addShake(i * 0.35);
+  }
 }
 const audio = makeAudio();
 
@@ -1582,8 +1626,16 @@ function animate(now) {
   renderer.render(scene, camera);
 }
 
+// Restore persisted selection + audio preference before building the menu.
+(function restore() {
+  const s = loadStore();
+  if (s.mapId && MAPS[s.mapId]) selection.mapId = s.mapId;
+  if (s.vehId && VEHICLES[s.vehId]) selection.vehId = s.vehId;
+  if (s.muted) audio.setMuted(true);
+})();
 buildMenu();
-loadMap(MAPS[selection.mapId]); // initial preview (current vehicle = jeep)
+loadMap(MAPS[selection.mapId]); // initial preview
+if (selection.vehId !== player.config.id) setVehicle(selection.vehId);
 animate();
 
 // Hide loader once first frame is scheduled.
