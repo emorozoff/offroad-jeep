@@ -82,6 +82,7 @@
   .section { margin-top: 16px; }
   .section .label { font-size: 12px; letter-spacing: .18em; text-transform: uppercase; color: #7f93a6; margin-bottom: 10px; }
   .cards { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+  #vehCards { grid-template-columns: repeat(2, 1fr); }
   .card {
     text-align: left; cursor: pointer; color: var(--fg);
     background: rgba(255,255,255,.04); border: 1.5px solid rgba(255,255,255,.1); border-radius: 12px;
@@ -936,8 +937,25 @@ const VEHICLES = {
     engineForce: 2050, maxSteer: 0.5, brakeForce: 55, handbrakeForce: 170,
     maxSpeed: 24, maxReverse: 11, drive: 'awd', gripMul: 0.92, gears: 4, redline: 0.88,
   },
+  monster: {
+    id: 'monster', name: 'Монстр-трак',
+    bodyColor: 0x7b3fa0, cabinColor: 0x1c1822, accent: 0x6cffd0,
+    mass: 260,
+    chassis: { hx: 1.05, hy: 0.45, hz: 2.1 },
+    cabin: { w: 1.6, h: 0.7, l: 1.7, x: 0, y: 0.6, z: 0.0 },
+    wheel: {
+      radius: 0.85, width: 0.62,
+      suspensionStiffness: 34, suspensionRestLength: 0.55, maxSuspensionTravel: 0.6,
+      frictionSlip: 3.0, dampingRelaxation: 3.2, dampingCompression: 4.5,
+      maxSuspensionForce: 220000, rollInfluence: 0.06,
+      customSlidingRotationalSpeed: -30, useCustomSlidingRotationalSpeed: true,
+    },
+    axleHalf: 1.3, wheelBaseFront: 1.6, wheelBaseRear: -1.6, connectY: 0.0, comOffsetY: 0.62,
+    engineForce: 2500, maxSteer: 0.55, brakeForce: 50, handbrakeForce: 160,
+    maxSpeed: 27, maxReverse: 12, drive: 'awd', gripMul: 1.12, gears: 4, redline: 0.9,
+  },
 };
-const VEHICLE_IDS = ['buggy', 'jeep', 'truck'];
+const VEHICLE_IDS = ['buggy', 'jeep', 'truck', 'monster'];
 
 // ------------------------------------------------------------------ [VEHICLE FACTORY]
 function buildChassisMesh(cfg) {
@@ -1094,6 +1112,7 @@ function spawnVehicle(v, x, y, z, yaw = 0) {
   b.quaternion.setFromEuler(0, yaw, 0);
   b.velocity.setZero();
   b.angularVelocity.setZero();
+  b.wakeUp();
   v.steer = 0;
 }
 
