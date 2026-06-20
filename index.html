@@ -277,7 +277,7 @@ import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 import { SMAAPass } from 'three/addons/postprocessing/SMAAPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
-import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
+import { mergeGeometries, mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 
 // =====================================================================================
 //  Offroad Jeep — single-file sandbox driving game
@@ -410,7 +410,7 @@ function applyEnvironment(env) {
   if (scene.userData.envRT) scene.userData.envRT.dispose();
   scene.userData.envRT = makeEnvRT(env);
   scene.environment = scene.userData.envRT.texture;
-  scene.environmentIntensity = 0.55;
+  scene.environmentIntensity = 0.32; // subtle reflections without blowing out flat surfaces
 }
 
 const DEFAULT_ENV = {
@@ -579,6 +579,14 @@ function buildTerrain(P) {
 
 let terrain = null; // built per-map by loadMap()
 
+// Shared placement registry so obstacles / vegetation / props don't overlap each other.
+let occupancy = [];
+function resetOccupancy() { occupancy = []; }
+function spotFree(x, z, r) {
+  for (const o of occupancy) { const dx = x - o.x, dz = z - o.z, rr = r + o.r; if (dx * dx + dz * dz < rr * rr) return false; }
+  return true;
+}
+
 // ------------------------------------------------------------------ [OBSTACLES]
 // Solid wedge ramp (triangular prism): tapers to ground at the low (+z) tip, rises to H at
 // the back (-z). Outward face winding is corrected programmatically so collision is robust.
@@ -612,7 +620,7 @@ function buildObstacles(P) {
   const group = new THREE.Group();
   scene.add(group);
   const rocks = [], ramps = [], logs = [];
-  const rockMat = new THREE.MeshStandardMaterial({ color: P.rockColor, roughness: 1.0, metalness: 0.0, flatShading: true });
+  const rockMat = new THREE.MeshStandardMaterial({ color: P.rockColor, roughness: 1.0, metalness: 0.0, flatShading: false });
   const rampMat = new THREE.MeshStandardMaterial({ color: P.rampColor, roughness: 0.85, metalness: 0.1, flatShading: true });
   const logMat = new THREE.MeshStandardMaterial({ color: P.logColor, roughness: 0.95 });
 
@@ -622,28 +630,31 @@ function buildObstacles(P) {
     const hz = groundHeightAt(x, z + d) - groundHeightAt(x, z - d);
     return Math.hypot(hx, hz) / (2 * d);
   }
-  function spot(maxSlope) {
-    for (let t = 0; t < 40; t++) {
+  // Finds a free spot meeting slope + clearance, then claims its footprint so nothing else overlaps.
+  function spot(maxSlope, footprint) {
+    for (let t = 0; t < 50; t++) {
       const x = (rng() * 2 - 1) * P.range, z = (rng() * 2 - 1) * P.range;
       if (Math.hypot(x, z) < P.clearRadius) continue;
       if (maxSlope != null && slopeAt(x, z) > maxSlope) continue;
+      if (footprint != null && !spotFree(x, z, footprint)) continue;
+      if (footprint != null) occupancy.push({ x, z, r: footprint });
       return [x, z];
     }
     return null;
   }
 
-  // Rocks: sphere collider + jittered icosahedron visual, partly buried.
+  // Rocks: sphere collider + welded, jittered icosahedron visual (solid, no cracks), partly buried.
   for (let i = 0; i < P.rocks; i++) {
-    const s = spot(null); if (!s) continue;
-    const [x, z] = s, y = groundHeightAt(x, z);
     const r = lerp(0.8, 3.0, rng());
+    const s = spot(null, r * 0.95); if (!s) continue;
+    const [x, z] = s, y = groundHeightAt(x, z);
     const body = new CANNON.Body({ mass: 0, material: groundMaterial });
     body.addShape(new CANNON.Sphere(r));
     body.position.set(x, y + r * 0.3, z);
     world.addBody(body);
-    const geo = new THREE.IcosahedronGeometry(r, 1);
+    let geo = mergeVertices(new THREE.IcosahedronGeometry(r, 1)); // weld duplicate corners -> indexed
     const pos = geo.attributes.position;
-    for (let v = 0; v < pos.count; v++)
+    for (let v = 0; v < pos.count; v++) // each unique vertex jittered once -> faces stay connected
       pos.setXYZ(v, pos.getX(v) * (0.82 + rng() * 0.36), pos.getY(v) * (0.78 + rng() * 0.44), pos.getZ(v) * (0.82 + rng() * 0.36));
     geo.computeVertexNormals();
     const m = new THREE.Mesh(geo, rockMat);
@@ -656,17 +667,24 @@ function buildObstacles(P) {
 
   // Ramps: solid wedge tapering to ground at the low (+z) tip, launches the car off the back.
   for (let i = 0; i < P.ramps; i++) {
-    const s = spot(0.10); if (!s) continue;
-    const [x, z] = s, y = groundHeightAt(x, z);
     const W = lerp(5, 7, rng()), L = lerp(8, 11, rng());
     const tilt = lerp(0.30, 0.40, rng());   // slope angle ~17-23 deg
     const H = L * Math.tan(tilt);
     const yaw = rng() * Math.PI * 2;
+    const s = spot(0.06, Math.max(W, L) * 0.55); if (!s) continue; // flatter ground + claim footprint
+    const [x, z] = s;
+    // Sink the base to the lowest terrain under the footprint so no edge floats in the air.
+    const cy = Math.cos(yaw), sy = Math.sin(yaw);
+    let minH = Infinity;
+    for (const lx of [-W / 2, 0, W / 2]) for (const lz of [-L / 2, 0, L / 2]) {
+      const wx = x + lx * cy + lz * sy, wz = z - lx * sy + lz * cy;
+      minH = Math.min(minH, groundHeightAt(wx, wz));
+    }
     const { shape, geometry } = makeWedge(W, L, H);
     const body = new CANNON.Body({ mass: 0, material: groundMaterial });
     body.addShape(shape);
     body.quaternion.setFromEuler(0, yaw, 0);
-    body.position.set(x, y, z);
+    body.position.set(x, minH - 0.15, z);
     world.addBody(body);
     const m = new THREE.Mesh(geometry, rampMat);
     m.position.copy(body.position); m.quaternion.copy(body.quaternion);
@@ -677,9 +695,9 @@ function buildObstacles(P) {
 
   // Logs: thin box collider + cylinder visual lying on its side.
   for (let i = 0; i < P.logs; i++) {
-    const s = spot(0.18); if (!s) continue;
-    const [x, z] = s, y = groundHeightAt(x, z);
     const len = lerp(3.5, 6.5, rng()), rad = lerp(0.4, 0.7, rng());
+    const s = spot(0.18, len * 0.5); if (!s) continue;
+    const [x, z] = s, y = groundHeightAt(x, z);
     const yaw = rng() * Math.PI * 2;
     const q = new CANNON.Quaternion(); q.setFromEuler(0, yaw, 0);
     const body = new CANNON.Body({ mass: 0, material: groundMaterial });
@@ -751,12 +769,15 @@ function buildVegetation(P) {
     const inst = new THREE.InstancedMesh(geo, mat, count);
     inst.castShadow = true; inst.receiveShadow = true; inst.frustumCulled = true;
     let placed = 0;
-    for (let t = 0; t < count * 9 && placed < count; t++) {
+    for (let t = 0; t < count * 12 && placed < count; t++) {
       const x = (rng() * 2 - 1) * P.range, z = (rng() * 2 - 1) * P.range;
       if (Math.hypot(x, z) < P.clearRadius) continue;
       if (slopeAt(x, z) > (spec.maxSlope || 0.4)) continue;
-      const y = groundHeightAt(x, z);
       const s = lerp(spec.minScale, spec.maxScale, rng());
+      const foot = (spec.collide ? 1.1 : 0.7) * s;
+      if (!spotFree(x, z, foot)) continue;                 // don't sit inside rocks/ramps/logs/trees
+      if (spec.collide) occupancy.push({ x, z, r: foot }); // trees space out + keep props clear
+      const y = groundHeightAt(x, z);
       dummy.position.set(x, y - 0.1, z); dummy.rotation.set(0, rng() * 6.283, 0); dummy.scale.setScalar(s);
       dummy.updateMatrix(); inst.setMatrixAt(placed, dummy.matrix);
       if (spec.collide) {
@@ -782,10 +803,12 @@ function buildProps(P) {
   const mat = new THREE.MeshStandardMaterial({ color: P.color || 0x9c6b3a, roughness: 0.82, metalness: 0.05 });
   const geoCache = {};
   function spot() {
-    for (let t = 0; t < 30; t++) {
+    for (let t = 0; t < 40; t++) {
       const x = (rng() * 2 - 1) * P.range, z = (rng() * 2 - 1) * P.range;
       if (Math.hypot(x, z) < P.clearRadius) continue;
       if (slopeAt(x, z) > 0.12) continue;
+      if (!spotFree(x, z, 1.8)) continue;       // clear of rocks/ramps/trees
+      occupancy.push({ x, z, r: 1.8 });
       return [x, z];
     }
     return null;
@@ -836,7 +859,7 @@ const MAPS = {
   desert: {
     id: 'desert', name: 'Пустыня',
     env: { skyTop: 0x3b6ea5, skyBottom: 0xe7cf9a, fog: 0xddc591, fogNear: 50, fogFar: 430,
-      hemiSky: 0xcfe0f0, hemiGround: 0xb89a63, hemiInt: 0.9, sunColor: 0xfff0d0, sunInt: 2.5, sunPos: new THREE.Vector3(80, 100, 30) },
+      hemiSky: 0xc4cdbb, hemiGround: 0xb89a63, hemiInt: 0.62, sunColor: 0xffe8c4, sunInt: 1.6, sunPos: new THREE.Vector3(90, 70, 40) },
     terrain: { seed: 21, gridSize: 128, elementSize: 2.0, fbm: true, octaves: 4, lacunarity: 2.0, gain: 0.5, frequency: 0.011,
       amplitude: 13, baseHeight: 0, ridged: false, rimStart: 0.74, rimHeight: 34, flatRadius: 11, flatBlend: 20,
       colorLow: 0xb08a4f, colorHigh: 0xe7c987 },
@@ -1490,6 +1513,7 @@ function loadMap(map) {
   currentMap = map;
   applyEnvironment(map.env);
   terrain = buildTerrain(map.terrain);
+  resetOccupancy(); // obstacles claim first, then vegetation/props avoid them
   obstacles = buildObstacles({ ...map.obstacles, range: terrain.half * 0.8, clearRadius: 16 });
   vegetation = buildVegetation({ seed: (map.obstacles && map.obstacles.seed) || 1, veg: map.veg, range: terrain.half * 0.85, clearRadius: 18 });
   props = buildProps({ seed: (map.obstacles && map.obstacles.seed) || 1, range: terrain.half * 0.7, clearRadius: 22, clusters: 8, color: (map.obstacles && map.obstacles.rampColor) || 0x9c6b3a });
@@ -1969,7 +1993,7 @@ let frame = 0;
 function animate(now) {
   requestAnimationFrame(animate);
   if (now === undefined) now = performance.now();
-  const dt = Math.min((now - lastTime) / 1000, 1 / 20); // clamp to avoid huge steps after tab-out
+  const dt = clamp((now - lastTime) / 1000, 0, 1 / 20); // clamp to [0, 1/20]: avoid huge steps after tab-out AND negative dt (backward timestamps) that blow up damp()
   lastTime = now;
   frame++;
 
