@@ -134,7 +134,7 @@
   <div id="hints">
     <div class="row"><b>W A S D / ←↑↓→</b> газ · тормоз · руль</div>
     <div class="row"><b>Пробел</b> ручник</div>
-    <div class="row"><b>R</b> перевернуть / сброс&nbsp; <b class="k">M</b> звук</div>
+    <div class="row"><b>R</b> сброс&nbsp; <b class="k">C</b> камера&nbsp; <b class="k">L</b> фары&nbsp; <b class="k">M</b> звук</div>
     <div class="row"><b>Мышь</b> осмотреться&nbsp; <b class="k">колесо</b> зум</div>
   </div>
   <div id="speedo">
@@ -271,14 +271,22 @@ sun.position.set(60, 90, 40);
 sun.castShadow = true;
 sun.shadow.mapSize.set(2048, 2048);
 sun.shadow.camera.near = 1;
-sun.shadow.camera.far = 400;
-const SH = 120; // shadow frustum half-size
+sun.shadow.camera.far = 320;
+const SH = 70; // shadow frustum half-size — tight because the light follows the car
 sun.shadow.camera.left = -SH; sun.shadow.camera.right = SH;
 sun.shadow.camera.top = SH; sun.shadow.camera.bottom = -SH;
 sun.shadow.bias = -0.0004;
 sun.shadow.normalBias = 0.03;
 scene.add(sun);
 scene.add(sun.target);
+// Offset of the sun from its target (= light direction*distance); the rig follows the player.
+const sunOffset = new THREE.Vector3(60, 90, 40);
+function updateSunFollow(px, pz) {
+  const py = (typeof groundHeightAt === 'function' && terrain) ? groundHeightAt(px, pz) : 0;
+  sun.target.position.set(px, py, pz);
+  sun.position.set(px + sunOffset.x, py + sunOffset.y, pz + sunOffset.z);
+  sun.target.updateMatrixWorld();
+}
 
 // ------------------------------------------------------------------ [SKY]
 // Reusable gradient sky dome (per-map colors later). Renders behind everything.
@@ -322,7 +330,7 @@ function applyEnvironment(env) {
   scene.fog = new THREE.Fog(env.fog, env.fogNear, env.fogFar);
   hemi.color.set(env.hemiSky); hemi.groundColor.set(env.hemiGround); hemi.intensity = env.hemiInt;
   sun.color.set(env.sunColor); sun.intensity = env.sunInt;
-  sun.position.copy(env.sunPos);
+  sunOffset.copy(env.sunPos);
 }
 
 const DEFAULT_ENV = {
@@ -652,7 +660,7 @@ const MAPS = {
     surfaceAt: (x, z) => (groundHeightAt(x, z) <= -1.95 ? SURF.ice : SURF.snow), // lake (clamped to -2.2) -> ice
   },
   jungle: {
-    id: 'jungle', name: 'Джунгли',
+    id: 'jungle', name: 'Джунгли', darkLights: true,
     env: { skyTop: 0x6f9277, skyBottom: 0xc2cfa8, fog: 0x8fa178, fogNear: 28, fogFar: 260,
       hemiSky: 0xbcd0a0, hemiGround: 0x47502f, hemiInt: 0.85, sunColor: 0xfff3d6, sunInt: 1.6, sunPos: new THREE.Vector3(40, 75, -40) },
     terrain: { seed: 55, gridSize: 128, elementSize: 2.0, fbm: true, octaves: 5, lacunarity: 2.1, gain: 0.5, frequency: 0.026,
@@ -754,6 +762,26 @@ function buildChassisMesh(cfg) {
   nose.position.set(0, c.hy * 0.6, c.hz - 0.1);
   nose.castShadow = true;
   inner.add(nose);
+
+  // --- light rig (head / tail / reverse + forward spotlights) ---
+  const lights = { head: [], tail: [], reverse: [], spots: [] };
+  const lampGeo = new THREE.BoxGeometry(0.22, 0.16, 0.08);
+  const mkLamp = (color, x, y, z) => {
+    const m = new THREE.Mesh(lampGeo, new THREE.MeshStandardMaterial({ color, emissive: color, emissiveIntensity: 0.2 }));
+    m.position.set(x, y, z); inner.add(m); return m;
+  };
+  for (const sx of [-1, 1]) {
+    lights.head.push(mkLamp(0xfff3d0, sx * c.hx * 0.7, c.hy * 0.2, c.hz + 0.02));
+    lights.tail.push(mkLamp(0x5a0c0c, sx * c.hx * 0.7, c.hy * 0.3, -c.hz - 0.02));
+    lights.reverse.push(mkLamp(0x202020, sx * c.hx * 0.35, c.hy * 0.0, -c.hz - 0.02));
+    const sp = new THREE.SpotLight(0xfff0d0, 0, 55, Math.PI * 0.16, 0.4, 1.2);
+    sp.castShadow = false;
+    sp.position.set(sx * c.hx * 0.7, c.hy * 0.2, c.hz);
+    sp.target.position.set(sx * c.hx * 0.7, -2, c.hz + 18);
+    inner.add(sp); inner.add(sp.target);
+    lights.spots.push(sp);
+  }
+  g.userData.lights = lights;
   return g;
 }
 
@@ -832,7 +860,23 @@ function createVehicle(cfg) {
   const steerWheels = [0, 1];
   const driveWheels = cfg.drive === 'fwd' ? [0, 1] : cfg.drive === 'rwd' ? [2, 3] : [0, 1, 2, 3];
 
-  return { config: cfg, chassisBody, vehicle, chassisMesh, wheelMeshes, steerWheels, driveWheels, steer: 0 };
+  return { config: cfg, chassisBody, vehicle, chassisMesh, wheelMeshes, steerWheels, driveWheels, steer: 0, lights: chassisMesh.userData.lights };
+}
+
+// Head/tail/reverse/spot lights driven by inputs + map darkness.
+let headlightsOn = false, headlightsManual = null; // null = auto by map
+function updateVehicleLights(v, dt) {
+  const L = v.lights; if (!L) return;
+  const playing = gameState === 'playing';
+  const braking = playing && pressed('KeyS', 'ArrowDown') && forwardSpeedOf(v) > 0.5;
+  const reversing = playing && forwardSpeedOf(v) < -0.5;
+  const auto = currentMap ? !!currentMap.darkLights : false;
+  const on = headlightsManual === null ? auto : headlightsManual;
+  for (const m of L.tail) m.material.emissiveIntensity = damp(m.material.emissiveIntensity, braking ? 2.2 : (on ? 0.5 : 0.15), 14, dt);
+  for (const m of L.tail) m.material.emissive.setHex(braking ? 0xff2a2a : 0x6a0e0e);
+  for (const m of L.reverse) { m.material.emissive.setHex(reversing ? 0xeef0ff : 0x202020); m.material.emissiveIntensity = reversing ? 1.8 : 0.0; }
+  for (const m of L.head) m.material.emissiveIntensity = damp(m.material.emissiveIntensity, on ? 1.8 : 0.15, 12, dt);
+  for (const s of L.spots) s.intensity = damp(s.intensity, on ? 6 : 0, 10, dt);
 }
 
 function spawnVehicle(v, x, y, z, yaw = 0) {
@@ -966,31 +1010,73 @@ function shortestAngleLerp(a, b, t) {
   return a + d * t;
 }
 
+const BASE_FOV = 60, FOV_ADD = 13;
+const CAM_MODES = ['chase', 'hood', 'cinematic'];
+let camMode = 'chase';
+const _camUp = new THREE.Vector3(), _camLook = new THREE.Vector3();
+
+function setFov(target, dt) {
+  if (Math.abs(camera.fov - target) > 0.05) { camera.fov = damp(camera.fov, target, 6, dt); camera.updateProjectionMatrix(); }
+}
+
 function updateCamera(v, dt, now) {
   const b = v.chassisBody;
   _camQ.copy(b.quaternion);
   _camFwd.set(0, 0, 1).applyQuaternion(_camQ);
+  _camUp.set(0, 1, 0).applyQuaternion(_camQ);
   const carYaw = Math.atan2(_camFwd.x, _camFwd.z);
-  const autoAz = carYaw + Math.PI; // sit behind the nose
-
   const speed = Math.hypot(b.velocity.x, b.velocity.z);
+  const speedFrac = clamp(speed / (v.config.maxSpeed || 30), 0, 1);
+
+  if (camMode === 'hood') {
+    // attached just above the hood, looking forward
+    _camDesired.set(b.position.x, b.position.y, b.position.z)
+      .addScaledVector(_camFwd, v.config.chassis.hz * 0.7).addScaledVector(_camUp, 0.95);
+    camera.position.lerp(_camDesired, 1 - Math.exp(-30 * dt));
+    _camLook.copy(b.position).addScaledVector(_camFwd, 24).addScaledVector(_camUp, 0.4);
+    camera.up.set(0, 1, 0);
+    camera.lookAt(_camLook);
+    setFov(BASE_FOV + speedFrac * (FOV_ADD + 4), dt);
+    return;
+  }
+
+  const autoAz = carYaw + Math.PI; // sit behind the nose
+  if (camMode === 'cinematic') {
+    camCtl.az += dt * 0.16; // slow auto orbit
+    const cp0 = Math.cos(0.2), sp0 = Math.sin(0.2);
+    _camDir.set(Math.sin(camCtl.az) * cp0, sp0, Math.cos(camCtl.az) * cp0);
+    camCtl.target.set(b.position.x, b.position.y + 1.0, b.position.z);
+    _camDesired.copy(camCtl.target).addScaledVector(_camDir, 17);
+    camera.position.lerp(_camDesired, 1 - Math.exp(-4 * dt));
+    camera.position.y = Math.max(camera.position.y, groundHeightAt(camera.position.x, camera.position.z) + 0.6);
+    camera.up.set(0, 1, 0); camera.lookAt(camCtl.target);
+    setFov(BASE_FOV + 6, dt);
+    return;
+  }
+
+  // chase (default)
   if (!camCtl.dragging && (now - camCtl.lastManual) > 1300 && speed > 2.2) {
     const k = 1 - Math.exp(-3.0 * dt);
     camCtl.az = shortestAngleLerp(camCtl.az, autoAz, k);
     camCtl.pitch = lerp(camCtl.pitch, 0.34, k * 0.6);
   }
-
   const cp = Math.cos(camCtl.pitch), sp = Math.sin(camCtl.pitch);
   _camDir.set(Math.sin(camCtl.az) * cp, sp, Math.cos(camCtl.az) * cp);
   camCtl.target.set(b.position.x, b.position.y + 1.05, b.position.z);
   _camDesired.copy(camCtl.target).addScaledVector(_camDir, camCtl.dist);
-
   camera.position.x = damp(camera.position.x, _camDesired.x, 9, dt);
   camera.position.y = damp(camera.position.y, _camDesired.y, 9, dt);
   camera.position.z = damp(camera.position.z, _camDesired.z, 9, dt);
   camera.position.y = Math.max(camera.position.y, groundHeightAt(camera.position.x, camera.position.z) + 0.6);
-  camera.lookAt(camCtl.target);
+  camera.up.set(0, 1, 0); camera.lookAt(camCtl.target);
+  setFov(BASE_FOV + speedFrac * FOV_ADD, dt);
 }
+window.addEventListener('keydown', (e) => {
+  if (e.code === 'KeyC' && !e.repeat && gameState === 'playing') {
+    camMode = CAM_MODES[(CAM_MODES.indexOf(camMode) + 1) % CAM_MODES.length];
+    camCtl.lastManual = -1e9;
+  }
+});
 
 (function bindCameraInput() {
   const el = renderer.domElement;
@@ -1251,6 +1337,10 @@ document.getElementById('toMenuBtn').addEventListener('click', openMenu);
 window.addEventListener('keydown', (e) => {
   if (e.code === 'Escape') { if (gameState === 'playing') pauseGame(); else if (gameState === 'paused') resumeGame(); }
   if (e.code === 'KeyM' && !e.repeat) audio.setMuted(!audio.muted);
+  if (e.code === 'KeyL' && !e.repeat) {
+    const auto = currentMap ? !!currentMap.darkLights : false;
+    headlightsManual = (headlightsManual === null ? !auto : !headlightsManual);
+  }
 });
 
 // ------------------------------------------------------------------ [FX] particles, tire tracks, camera shake
@@ -1481,6 +1571,8 @@ function animate(now) {
   if (gameState === 'playing') updateWheelFX(player, dt);
   fxParticles.update(dt);
   fxTracks.update(dt);
+  updateVehicleLights(player, dt);
+  updateSunFollow(player.chassisBody.position.x, player.chassisBody.position.z);
 
   updateCamera(player, dt, now);
   applyShake(dt);
@@ -1510,7 +1602,10 @@ Object.assign(DBG, {
   selection, startGame, openMenu, pauseGame, resumeGame, selectMap, selectVeh,
   fxParticles, fxTracks, addShake, audio,
   setSurface: (s) => { currentSurfaceAt = () => s; }, // test hook
+  setCamMode: (m) => { camMode = m; },
 });
+Object.defineProperty(DBG, 'camMode', { get: () => camMode });
+Object.defineProperty(DBG, 'headlightsManual', { get: () => headlightsManual, set: (v) => { headlightsManual = v; } });
 Object.defineProperty(DBG, 'shakeAmt', { get: () => shakeAmt });
 Object.defineProperty(DBG, 'frame', { get: () => frame });
 Object.defineProperty(DBG, 'player', { get: () => player, configurable: true });
