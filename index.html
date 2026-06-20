@@ -1146,16 +1146,53 @@ function forwardSpeedOf(v) {
   return v.chassisBody.velocity.dot(_fwd);
 }
 
+// ------------------------------------------------------------------ [GAMEPAD]
+let gpInput = null;
+const _gpPrev = [];
+function pollGamepad() {
+  const pads = navigator.getGamepads ? navigator.getGamepads() : [];
+  let gp = null;
+  for (const p of pads) if (p && p.connected) { gp = p; break; }
+  if (!gp) { gpInput = null; return; }
+  const ax = gp.axes, bt = gp.buttons;
+  const dz = (val, d) => (Math.abs(val) > d ? val : 0);
+  const val = (i) => (bt[i] ? bt[i].value : 0);
+  const down = (i) => !!(bt[i] && bt[i].pressed);
+  gpInput = {
+    steer: dz(ax[0] || 0, 0.12),
+    throttle: val(7),                 // RT
+    brake: val(6),                    // LT
+    handbrake: down(0),               // A
+    camX: dz(ax[2] || 0, 0.16), camY: dz(ax[3] || 0, 0.16),
+  };
+  const fired = (i) => down(i) && !_gpPrev[i];
+  if (gameState === 'playing') {
+    if (fired(1)) resetVehicle(player);                                                    // B = reset
+    if (fired(2)) { camMode = CAM_MODES[(CAM_MODES.indexOf(camMode) + 1) % CAM_MODES.length]; camCtl.lastManual = -1e9; } // X = camera
+    if (fired(3)) { const a = currentMap ? !!currentMap.darkLights : false; headlightsManual = (headlightsManual === null ? !a : !headlightsManual); } // Y = lights
+  }
+  if (fired(9)) { if (gameState === 'playing') pauseGame(); else if (gameState === 'paused') resumeGame(); } // Start = pause
+  for (let i = 0; i < bt.length; i++) _gpPrev[i] = down(i);
+}
+
 function applyVehicleControls(v, dt) {
   const cfg = v.config;
-  const accel = pressed('KeyW', 'ArrowUp');
-  const back = pressed('KeyS', 'ArrowDown');
-  const left = pressed('KeyA', 'ArrowLeft');
-  const right = pressed('KeyD', 'ArrowRight');
-  const handbrake = pressed('Space');
+  // Combine keyboard (binary) with gamepad (analog) input.
+  let steerIn = (pressed('KeyA', 'ArrowLeft') ? 1 : 0) - (pressed('KeyD', 'ArrowRight') ? 1 : 0);
+  let throttle = pressed('KeyW', 'ArrowUp') ? 1 : 0;
+  let braking = pressed('KeyS', 'ArrowDown') ? 1 : 0;
+  let handbrake = pressed('Space');
+  if (gpInput) {
+    if (Math.abs(gpInput.steer) > 0.001) steerIn = -gpInput.steer; // stick right -> steer right
+    throttle = Math.max(throttle, gpInput.throttle);
+    braking = Math.max(braking, gpInput.brake);
+    if (gpInput.handbrake) handbrake = true;
+  }
+  const accel = throttle > 0.05;
+  const back = braking > 0.05;
 
-  // Smoothed steering.
-  const steerTarget = (left ? cfg.maxSteer : 0) - (right ? cfg.maxSteer : 0);
+  // Smoothed (analog) steering.
+  const steerTarget = clamp(steerIn, -1, 1) * cfg.maxSteer;
   v.steer = damp(v.steer, steerTarget, 12, dt);
   for (const i of v.steerWheels) v.vehicle.setSteeringValue(v.steer, i);
 
@@ -1163,10 +1200,10 @@ function applyVehicleControls(v, dt) {
   let engine = 0, brake = 0;
   // Forward drive is -engineForce with this axis/connection layout (verified by test).
   if (accel) {
-    if (fwd < cfg.maxSpeed) engine = -cfg.engineForce; // cut engine past top speed
+    if (fwd < cfg.maxSpeed) engine = -cfg.engineForce * throttle; // analog throttle
   } else if (back) {
-    if (fwd > 1.0) brake = cfg.brakeForce;             // moving forward -> brake first
-    else if (-fwd < cfg.maxReverse) engine = cfg.engineForce * 0.6; // then reverse, capped
+    if (fwd > 1.0) brake = cfg.brakeForce * braking;              // moving forward -> brake first
+    else if (-fwd < cfg.maxReverse) engine = cfg.engineForce * 0.6 * braking; // then reverse, capped
   }
   // light engine braking / rolling resistance when coasting
   if (!accel && !back && !handbrake) brake = 3;
@@ -1256,6 +1293,12 @@ function updateCamera(v, dt, now) {
   const carYaw = Math.atan2(_camFwd.x, _camFwd.z);
   const speed = Math.hypot(b.velocity.x, b.velocity.z);
   const speedFrac = clamp(speed / (v.config.maxSpeed || 30), 0, 1);
+
+  if (gpInput && (gpInput.camX || gpInput.camY)) { // right-stick look
+    camCtl.az -= gpInput.camX * dt * 2.5;
+    camCtl.pitch = clamp(camCtl.pitch + gpInput.camY * dt * 2.0, 0.06, 1.35);
+    camCtl.lastManual = now;
+  }
 
   if (camMode === 'hood') {
     // attached just above the hood, looking forward
@@ -1930,6 +1973,7 @@ function animate(now) {
   lastTime = now;
   frame++;
 
+  pollGamepad();
   const preVelY = player.chassisBody.velocity.y; // capture fall speed before the step resolves impact
   if (gameState === 'playing') {
     applyVehicleControls(player, dt);
