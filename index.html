@@ -54,6 +54,9 @@
     font: 700 30px/1 ui-monospace, SFMono-Regular, Menlo, monospace; color: #fff; }
   #speedUnit { position: absolute; left: 0; right: 0; bottom: 26px; text-align: center;
     font-size: 10px; letter-spacing: .14em; color: #9fb0c0; }
+  #incl { position: absolute; right: 196px; bottom: 30px; width: 74px; height: 74px;
+    filter: drop-shadow(0 4px 12px rgba(0,0,0,.4)); }
+  #incl svg { width: 100%; height: 100%; display: block; }
   #surfaceTag { position: absolute; top: 14px; left: 50%; transform: translateX(-50%);
     background: rgba(12,16,22,.5); border: 1px solid rgba(255,255,255,.08); border-radius: 999px;
     padding: 6px 14px; backdrop-filter: blur(6px); white-space: nowrap; }
@@ -138,7 +141,11 @@
     <svg viewBox="0 0 200 200">
       <path d="M 32.5 139 A 78 78 0 1 1 167.5 139" fill="none"
             stroke="rgba(255,255,255,.12)" stroke-width="10" stroke-linecap="round"/>
+      <path id="rpmArc" d="M 46.3 131 A 62 62 0 1 1 153.7 131" fill="none"
+            stroke="#46d17a" stroke-width="5" stroke-linecap="round"
+            pathLength="100" stroke-dasharray="0 100"/>
       <g id="speedoTicks"></g>
+      <text id="gearText" x="100" y="70" text-anchor="middle" font-size="24" font-weight="700" fill="#fff">N</text>
       <g id="needle">
         <polygon points="100,32 96,104 104,104" fill="#f2c14e"/>
       </g>
@@ -146,6 +153,20 @@
     </svg>
     <div id="speedNum">0</div>
     <div id="speedUnit">КМ/Ч</div>
+  </div>
+  <div id="incl" title="крен / тангаж">
+    <svg viewBox="0 0 80 80">
+      <defs><clipPath id="iclip"><circle cx="40" cy="40" r="32"/></clipPath></defs>
+      <g clip-path="url(#iclip)">
+        <g id="inclHorizon">
+          <rect x="-60" y="-60" width="200" height="100" fill="#3f6e9e"/>
+          <rect x="-60" y="40" width="200" height="100" fill="#6b5536"/>
+          <line x1="-60" y1="40" x2="140" y2="40" stroke="#fff" stroke-width="1.4"/>
+        </g>
+      </g>
+      <circle cx="40" cy="40" r="32" fill="none" stroke="rgba(255,255,255,.28)" stroke-width="1.5"/>
+      <path d="M 24 40 L 33 40 M 47 40 L 56 40 M 40 38 L 40 42" stroke="#f2c14e" stroke-width="2" fill="none"/>
+    </svg>
   </div>
 </div>
 
@@ -663,7 +684,7 @@ const VEHICLES = {
     },
     axleHalf: 0.95, wheelBaseFront: 1.2, wheelBaseRear: -1.2, connectY: 0.0, comOffsetY: 0.28,
     engineForce: 1150, maxSteer: 0.62, brakeForce: 22, handbrakeForce: 70,
-    maxSpeed: 38, maxReverse: 15, drive: 'rwd', gripMul: 1.3,
+    maxSpeed: 38, maxReverse: 15, drive: 'rwd', gripMul: 1.3, gears: 6, redline: 0.92,
   },
   jeep: {
     id: 'jeep', name: 'Джип',
@@ -680,7 +701,7 @@ const VEHICLES = {
     },
     axleHalf: 1.0, wheelBaseFront: 1.45, wheelBaseRear: -1.45, connectY: 0.0, comOffsetY: 0.34,
     engineForce: 1000, maxSteer: 0.55, brakeForce: 28, handbrakeForce: 90,
-    maxSpeed: 31, maxReverse: 13, drive: 'awd', gripMul: 1.0,
+    maxSpeed: 31, maxReverse: 13, drive: 'awd', gripMul: 1.0, gears: 5, redline: 0.9,
   },
   truck: {
     id: 'truck', name: 'Внедорожник',
@@ -697,7 +718,7 @@ const VEHICLES = {
     },
     axleHalf: 1.2, wheelBaseFront: 1.7, wheelBaseRear: -1.7, connectY: 0.0, comOffsetY: 0.46,
     engineForce: 2050, maxSteer: 0.5, brakeForce: 55, handbrakeForce: 170,
-    maxSpeed: 24, maxReverse: 11, drive: 'awd', gripMul: 0.92,
+    maxSpeed: 24, maxReverse: 11, drive: 'awd', gripMul: 0.92, gears: 4, redline: 0.88,
   },
 };
 const VEHICLE_IDS = ['buggy', 'jeep', 'truck'];
@@ -883,6 +904,23 @@ function applyVehicleControls(v, dt) {
     v.vehicle.setBrake(brake, i);
   }
   if (handbrake) { v.vehicle.setBrake(cfg.handbrakeForce, 2); v.vehicle.setBrake(cfg.handbrakeForce, 3); }
+
+  // --- drivetrain: rpm (0..1) + gear, for tachometer + engine sound ---
+  const gc = cfg.gears || 5;
+  const speedFrac = clamp(Math.abs(fwd) / cfg.maxSpeed, 0, 1);
+  let gear, rpm;
+  if (fwd < -0.5) {                                  // reversing
+    gear = 'R'; rpm = 0.2 + clamp(-fwd / cfg.maxReverse, 0, 1) * 0.7;
+  } else if (speedFrac < 0.015) {                     // standstill / idle
+    gear = (accel || back) ? 1 : 'N'; rpm = 0.16 + (accel ? 0.55 : 0);
+  } else {                                            // forward gears
+    const gf = speedFrac * gc;
+    gear = Math.min(gc, Math.floor(gf) + 1);
+    rpm = 0.22 + (gf - Math.floor(gf)) * 0.7;
+  }
+  v.rpm = damp(v.rpm === undefined ? 0.16 : v.rpm, rpm, 9, dt);
+  v.gear = gear;
+  v.throttleOn = accel || (back && fwd <= 0.5);
 }
 
 // ------------------------------------------------------------------ [GROUND HEIGHT]
@@ -999,11 +1037,30 @@ const HUD_MAX_KMH = 140;
 const surfMapEl = document.querySelector('#surfaceTag .map');
 const surfVehEl = document.querySelector('#surfaceTag .veh');
 const surfNameEl = document.querySelector('#surfaceTag .surf');
+const rpmArcEl = document.getElementById('rpmArc');
+const gearTextEl = document.getElementById('gearText');
+const inclHorizonEl = document.getElementById('inclHorizon');
+const _hudFwd = new THREE.Vector3(), _hudRight = new THREE.Vector3(), _hudUp = new THREE.Vector3(), _hudQ = new THREE.Quaternion();
 function updateHUD(v) {
   const kmh = Math.hypot(v.chassisBody.velocity.x, v.chassisBody.velocity.z) * 3.6;
   speedNumEl.textContent = Math.round(kmh);
   const t = clamp(kmh / HUD_MAX_KMH, 0, 1);
   needleEl.setAttribute('transform', `rotate(${(-120 + t * 240).toFixed(1)} 100 100)`);
+  // tachometer arc + redline color
+  const rpm = v.rpm !== undefined ? v.rpm : 0;
+  rpmArcEl.setAttribute('stroke-dasharray', `${(rpm * 100).toFixed(1)} 100`);
+  const redline = v.config.redline || 0.9;
+  rpmArcEl.setAttribute('stroke', rpm > redline ? '#ff5b5b' : rpm > redline * 0.8 ? '#f2c14e' : '#46d17a');
+  gearTextEl.textContent = v.gear === undefined ? 'N' : v.gear;
+  // inclinometer (roll + pitch from chassis orientation)
+  _hudQ.copy(v.chassisBody.quaternion);
+  _hudFwd.set(0, 0, 1).applyQuaternion(_hudQ);
+  _hudRight.set(1, 0, 0).applyQuaternion(_hudQ);
+  _hudUp.set(0, 1, 0).applyQuaternion(_hudQ);
+  const pitch = Math.asin(clamp(_hudFwd.y, -1, 1));            // +nose up
+  const rollDeg = -Math.atan2(_hudRight.y, _hudUp.y) * 180 / Math.PI; // +right-side-down
+  const pitchPx = clamp(pitch * 60, -30, 30);
+  inclHorizonEl.setAttribute('transform', `rotate(${rollDeg.toFixed(1)} 40 40) translate(0 ${pitchPx.toFixed(1)})`);
   if (currentMap) surfMapEl.textContent = currentMap.name;
   surfVehEl.textContent = v.config.name;
   if (v.surface) surfNameEl.textContent = v.surface.name;
@@ -1361,8 +1418,8 @@ function makeAudio() {
     const t = ctx.currentTime;
     const speed = Math.hypot(v.chassisBody.velocity.x, v.chassisBody.velocity.z);
     const throttle = playing && pressed('KeyW', 'ArrowUp', 'KeyS', 'ArrowDown') ? 1 : 0;
-    const rpm = 0.18 + clamp(speed / (v.config.maxSpeed || 30), 0, 1) * 0.82;
-    const freq = 52 + rpm * 175 + throttle * 18;
+    const rpm = v.rpm !== undefined ? v.rpm : (0.18 + clamp(speed / (v.config.maxSpeed || 30), 0, 1) * 0.82);
+    const freq = 52 + rpm * 185 + throttle * 14;
     eOsc.frequency.setTargetAtTime(freq, t, 0.06);
     eOsc2.frequency.setTargetAtTime(freq * 1.01, t, 0.06);
     const eg = playing ? (0.05 + rpm * 0.11 + throttle * 0.05) : 0;
