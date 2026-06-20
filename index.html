@@ -105,6 +105,9 @@
   }
   #startBtn:hover, #resumeBtn:hover { filter: brightness(1.08); }
   #startBtn:active, #resumeBtn:active { transform: translateY(1px); }
+  #randomBtn { cursor: pointer; font: 600 14px system-ui, sans-serif; color: #cdd6dd;
+    background: transparent; border: 1.5px solid rgba(255,255,255,.18); border-radius: 10px; padding: 11px 18px; }
+  #randomBtn:hover { background: rgba(255,255,255,.06); }
   #pause .panel {
     width: min(380px, 90vw); padding: 26px 28px; text-align: center;
     background: rgba(14,18,24,.9); border: 1px solid rgba(255,255,255,.1); border-radius: 16px;
@@ -177,7 +180,8 @@
     <div class="section"><div class="label">Машина</div><div class="cards" id="vehCards"></div></div>
     <div class="footer">
       <button id="startBtn">Поехали&nbsp;→</button>
-      <div class="ctrlHint">WASD / стрелки — руль и газ · Пробел — ручник · R — сброс · мышь — обзор · колесо — зум</div>
+      <button id="randomBtn" class="ghost">🎲 Случайная</button>
+      <div class="ctrlHint">WASD / стрелки — руль и газ · Пробел — ручник · R — сброс · C — камера · мышь — обзор</div>
     </div>
   </div>
 </div>
@@ -756,6 +760,7 @@ const MAPS = {
       { type: 'cactus', count: 22, minScale: 0.7, maxScale: 1.5, maxSlope: 0.16, collide: true },
       { type: 'deadbush', count: 45, minScale: 0.6, maxScale: 1.3, maxSlope: 0.32, collide: false },
     ],
+    weather: { type: 'dust', color: 0xe8d2a0, size: 0.6, opacity: 0.32, area: 120, height: 32, below: 6, fall: 0.4, driftX: 3.2, driftZ: 1.0, sway: 0.6 },
     surfaceAt: () => SURF.sand,
   },
   winter: {
@@ -770,6 +775,7 @@ const MAPS = {
       { type: 'pine', count: 46, minScale: 0.9, maxScale: 1.9, maxSlope: 0.3, collide: true },
       { type: 'bush', count: 26, minScale: 0.5, maxScale: 1.0, maxSlope: 0.35, collide: false },
     ],
+    weather: { type: 'snow', color: 0xffffff, size: 0.28, opacity: 0.85, area: 80, height: 34, below: 12, fall: 5.5, driftX: 1.2, driftZ: 0.6, sway: 1.3 },
     surfaceAt: (x, z) => (groundHeightAt(x, z) <= -1.95 ? SURF.ice : SURF.snow), // lake (clamped to -2.2) -> ice
   },
   jungle: {
@@ -784,6 +790,7 @@ const MAPS = {
       { type: 'jungletree', count: 64, minScale: 0.8, maxScale: 1.7, maxSlope: 0.35, collide: true },
       { type: 'bush', count: 95, minScale: 0.7, maxScale: 1.6, maxSlope: 0.42, collide: false },
     ],
+    weather: { type: 'mist', color: 0xc2cfb2, size: 1.7, opacity: 0.16, area: 95, height: 16, below: 4, fall: 0.15, driftX: 0.9, driftZ: 0.4, sway: 0.3 },
     surfaceAt: () => SURF.mud,
   },
 };
@@ -1333,7 +1340,7 @@ function loadMap(map) {
   obstacles = buildObstacles({ ...map.obstacles, range: terrain.half * 0.8, clearRadius: 16 });
   vegetation = buildVegetation({ seed: (map.obstacles && map.obstacles.seed) || 1, veg: map.veg, range: terrain.half * 0.85, clearRadius: 18 });
   currentSurfaceAt = map.surfaceAt;
-  if (typeof fxParticles !== 'undefined') { fxParticles.clear(); fxTracks.clear(); _trackDist = 0; shakeAmt = 0; }
+  if (typeof fxParticles !== 'undefined') { fxParticles.clear(); fxTracks.clear(); _trackDist = 0; shakeAmt = 0; fxWeather.set(map.weather || null); }
   if (player) {
     spawnVehicle(player, 0, terrain.heightAt(0, 0) + 2.2, 0, 0);
     camCtl.az = Math.PI; camCtl.pitch = 0.34; camCtl.dist = 9.5; camCtl.lastManual = -1e9;
@@ -1464,6 +1471,13 @@ function resumeGame() { gameState = 'playing'; pauseEl.classList.add('hidden'); 
 
 document.getElementById('mapCards').addEventListener('click', (e) => { const c = e.target.closest('.card'); if (c) selectMap(c.dataset.id); });
 document.getElementById('vehCards').addEventListener('click', (e) => { const c = e.target.closest('.card'); if (c) selectVeh(c.dataset.id); });
+function randomMap() {
+  uiClick();
+  const base = MAPS[selection.mapId];
+  const seed = (Math.random() * 1e9) | 0;
+  loadMap({ ...base, terrain: { ...base.terrain, seed }, obstacles: { ...base.obstacles, seed } });
+}
+document.getElementById('randomBtn').addEventListener('click', randomMap);
 document.getElementById('startBtn').addEventListener('click', () => { uiClick(); startGame(); });
 document.getElementById('resumeBtn').addEventListener('click', () => { uiClick(); resumeGame(); });
 document.getElementById('toMenuBtn').addEventListener('click', () => { uiClick(); openMenu(); });
@@ -1564,6 +1578,50 @@ function makeTracks(max) {
 const fxParticles = makeParticles(500);
 const fxTracks = makeTracks(420);
 let _trackDist = 0;
+
+// Weather/atmosphere: a particle field that wraps around the camera (snow / dust / mist).
+function makeWeather(max) {
+  const pos = new Float32Array(max * 3);
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  const mat = new THREE.PointsMaterial({ color: 0xffffff, size: 0.3, transparent: true, opacity: 0.8, depthWrite: false, sizeAttenuation: true, fog: true });
+  const points = new THREE.Points(geo, mat); points.frustumCulled = false; points.visible = false; scene.add(points);
+  let cfg = null, seeded = false;
+  function seed(camx, camy, camz) {
+    for (let i = 0; i < max; i++) {
+      pos[i * 3] = camx + (Math.random() - 0.5) * cfg.area;
+      pos[i * 3 + 1] = camy - cfg.below + Math.random() * cfg.height;
+      pos[i * 3 + 2] = camz + (Math.random() - 0.5) * cfg.area;
+    }
+    geo.attributes.position.needsUpdate = true; seeded = true;
+  }
+  function set(w) {
+    cfg = w; points.visible = !!w; seeded = false;
+    if (w) { mat.color.set(w.color); mat.size = w.size; mat.opacity = w.opacity; }
+  }
+  function update(dt, cam) {
+    if (!cfg) return;
+    if (!seeded) seed(cam.x, cam.y, cam.z);
+    const half = cfg.area / 2, top = cam.y - cfg.below + cfg.height, bot = cam.y - cfg.below;
+    const dx = cfg.driftX * dt, dz = cfg.driftZ * dt, dy = cfg.fall * dt;
+    const sway = cfg.sway || 0;
+    for (let i = 0; i < max; i++) {
+      const k = i * 3;
+      pos[k] += dx + (sway ? Math.sin((pos[k + 1] + i) * 0.5) * sway * dt : 0);
+      pos[k + 1] -= dy;
+      pos[k + 2] += dz;
+      // wrap horizontally around the camera
+      if (pos[k] - cam.x > half) pos[k] -= cfg.area; else if (pos[k] - cam.x < -half) pos[k] += cfg.area;
+      if (pos[k + 2] - cam.z > half) pos[k + 2] -= cfg.area; else if (pos[k + 2] - cam.z < -half) pos[k + 2] += cfg.area;
+      // recycle vertically
+      if (pos[k + 1] < bot) { pos[k + 1] = top; pos[k] = cam.x + (Math.random() - 0.5) * cfg.area; pos[k + 2] = cam.z + (Math.random() - 0.5) * cfg.area; }
+      else if (pos[k + 1] > top) pos[k + 1] = bot;
+    }
+    geo.attributes.position.needsUpdate = true;
+  }
+  return { set, update };
+}
+const fxWeather = makeWeather(700);
 const _wcp = new THREE.Vector3();
 
 function updateWheelFX(v, dt) {
@@ -1743,6 +1801,7 @@ function animate(now) {
   updateSunFollow(player.chassisBody.position.x, player.chassisBody.position.z);
 
   updateCamera(player, dt, now);
+  fxWeather.update(dt, camera.position);
   applyShake(dt);
   updateHUD(player);
   audio.update(player, gameState === 'playing');
