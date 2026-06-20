@@ -66,12 +66,12 @@
   #surfaceTag .sep { opacity: .4; margin: 0 8px; }
 
   /* Menu + pause overlays */
-  #menu, #pause {
+  #menu, #pause, #settings {
     position: fixed; inset: 0; z-index: 40; display: flex; align-items: center; justify-content: center;
     background: rgba(8,10,14,.5); backdrop-filter: blur(7px);
     font: 500 14px/1.4 system-ui, -apple-system, Segoe UI, Roboto, sans-serif; color: var(--fg);
   }
-  #menu.hidden, #pause.hidden { display: none; }
+  #menu.hidden, #pause.hidden, #settings.hidden { display: none; }
   #menu .panel {
     width: min(880px, 94vw); max-height: 94vh; overflow: auto; padding: 20px 30px 16px;
     background: rgba(14,18,24,.82); border: 1px solid rgba(255,255,255,.1); border-radius: 18px;
@@ -115,8 +115,34 @@
   }
   #pause h2 { font: 700 24px system-ui, sans-serif; color: #fff; letter-spacing: .04em; }
   #pause .pauseInfo { color: #9fb0c0; font-size: 13px; margin-bottom: 6px; }
-  #toMenuBtn.ghost { background: transparent; color: #cdd6dd; border: 1.5px solid rgba(255,255,255,.18); }
-  #toMenuBtn.ghost:hover { background: rgba(255,255,255,.06); }
+  #toMenuBtn.ghost, #pauseSettingsBtn.ghost { background: transparent; color: #cdd6dd; border: 1.5px solid rgba(255,255,255,.18); }
+  #toMenuBtn.ghost:hover, #pauseSettingsBtn.ghost:hover { background: rgba(255,255,255,.06); }
+  #menuSettingsBtn.ghost { cursor: pointer; font: 600 14px system-ui, sans-serif; color: #cdd6dd;
+    background: transparent; border: 1.5px solid rgba(255,255,255,.18); border-radius: 10px; padding: 11px 18px; }
+  #menuSettingsBtn.ghost:hover { background: rgba(255,255,255,.06); }
+
+  /* Settings panel */
+  #settings { z-index: 45; }
+  #settings .panel { width: min(440px, 92vw); padding: 22px 26px; display: grid; gap: 6px;
+    background: rgba(14,18,24,.92); border: 1px solid rgba(255,255,255,.1); border-radius: 16px; }
+  #settings h2 { font: 700 22px system-ui, sans-serif; color: #fff; margin-bottom: 8px; }
+  .srow { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 8px 0;
+    border-top: 1px solid rgba(255,255,255,.06); font-size: 14px; }
+  .srow > span { color: #c4cfd8; }
+  .seg { display: inline-flex; border: 1px solid rgba(255,255,255,.14); border-radius: 8px; overflow: hidden; }
+  .seg button { background: transparent; color: #9fb0c0; border: none; padding: 6px 12px; cursor: pointer; font: 600 12px system-ui; }
+  .seg button.on { background: #f2c14e; color: #10141a; }
+  .sw { position: relative; width: 42px; height: 24px; cursor: pointer; }
+  .sw input { opacity: 0; width: 0; height: 0; }
+  .sw i { position: absolute; inset: 0; background: rgba(255,255,255,.14); border-radius: 999px; transition: background .15s; }
+  .sw i::after { content: ''; position: absolute; top: 3px; left: 3px; width: 18px; height: 18px; border-radius: 50%;
+    background: #cdd6dd; transition: transform .15s; }
+  .sw input:checked + i { background: #f2c14e; }
+  .sw input:checked + i::after { transform: translateX(18px); background: #10141a; }
+  .srow input[type=range] { width: 160px; accent-color: #f2c14e; }
+  #settingsClose { margin-top: 12px; cursor: pointer; font: 700 15px system-ui, sans-serif; color: #10141a;
+    background: #f2c14e; border: none; border-radius: 10px; padding: 11px 22px; }
+  #settingsClose:hover { filter: brightness(1.08); }
 </style>
 </head>
 <body>
@@ -181,6 +207,7 @@
     <div class="footer">
       <button id="startBtn">Поехали&nbsp;→</button>
       <button id="randomBtn" class="ghost">🎲 Случайная</button>
+      <button id="menuSettingsBtn" class="ghost">⚙ Настройки</button>
       <div class="ctrlHint">WASD / стрелки — руль и газ · Пробел — ручник · R — сброс · C — камера · мышь — обзор</div>
     </div>
   </div>
@@ -191,7 +218,22 @@
     <h2>Пауза</h2>
     <div class="pauseInfo" id="pauseInfo"></div>
     <button id="resumeBtn">Продолжить</button>
+    <button id="pauseSettingsBtn" class="ghost">Настройки</button>
     <button id="toMenuBtn" class="ghost">В меню</button>
+  </div>
+</div>
+
+<div id="settings" class="hidden">
+  <div class="panel">
+    <h2>Настройки</h2>
+    <div class="srow"><span>Качество графики</span><div class="seg" id="qualitySeg">
+      <button data-q="low">Низкое</button><button data-q="medium">Среднее</button><button data-q="high">Высокое</button></div></div>
+    <div class="srow"><span>Свечение (bloom)</span><label class="sw"><input type="checkbox" id="setBloom"><i></i></label></div>
+    <div class="srow"><span>Громкость</span><input type="range" id="setVol" min="0" max="1" step="0.05"></div>
+    <div class="srow"><span>Обзор (FOV)</span><input type="range" id="setFov" min="50" max="85" step="1"></div>
+    <div class="srow"><span>Чувствительность мыши</span><input type="range" id="setSens" min="0.3" max="2.5" step="0.1"></div>
+    <div class="srow"><span>Инверсия мыши (Y)</span><label class="sw"><input type="checkbox" id="setInvert"><i></i></label></div>
+    <button id="settingsClose">Готово</button>
   </div>
 </div>
 
@@ -702,12 +744,13 @@ function buildVegetation(P) {
   const bodies = [], instances = [];
   const dummy = new THREE.Object3D();
   for (const spec of (P.veg || [])) {
+    const count = Math.max(1, Math.round(spec.count * qualityVeg));
     const geo = makeVegGeo(spec.type);
     const mat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.92, metalness: 0 });
-    const inst = new THREE.InstancedMesh(geo, mat, spec.count);
+    const inst = new THREE.InstancedMesh(geo, mat, count);
     inst.castShadow = true; inst.receiveShadow = true; inst.frustumCulled = true;
     let placed = 0;
-    for (let t = 0; t < spec.count * 9 && placed < spec.count; t++) {
+    for (let t = 0; t < count * 9 && placed < count; t++) {
       const x = (rng() * 2 - 1) * P.range, z = (rng() * 2 - 1) * P.range;
       if (Math.hypot(x, z) < P.clearRadius) continue;
       if (slopeAt(x, z) > (spec.maxSlope || 0.4)) continue;
@@ -1135,7 +1178,8 @@ function shortestAngleLerp(a, b, t) {
   return a + d * t;
 }
 
-const BASE_FOV = 60, FOV_ADD = 13;
+let BASE_FOV = 60; const FOV_ADD = 13;
+let qualityVeg = 0.75, qualityPart = 0.85, mouseSens = 1.0, invertY = false;
 const CAM_MODES = ['chase', 'hood', 'cinematic'];
 let camMode = 'chase';
 const _camUp = new THREE.Vector3(), _camLook = new THREE.Vector3();
@@ -1209,8 +1253,8 @@ window.addEventListener('keydown', (e) => {
   window.addEventListener('mouseup', () => { if (camCtl.dragging) { camCtl.dragging = false; camCtl.lastManual = performance.now(); } });
   window.addEventListener('mousemove', (e) => {
     if (!camCtl.dragging) return;
-    camCtl.az -= e.movementX * 0.005;
-    camCtl.pitch = clamp(camCtl.pitch - e.movementY * 0.005, 0.06, 1.35);
+    camCtl.az -= e.movementX * 0.005 * mouseSens;
+    camCtl.pitch = clamp(camCtl.pitch + (invertY ? 1 : -1) * e.movementY * 0.005 * mouseSens, 0.06, 1.35);
     camCtl.lastManual = performance.now();
   });
   el.addEventListener('wheel', (e) => {
@@ -1482,13 +1526,62 @@ document.getElementById('startBtn').addEventListener('click', () => { uiClick();
 document.getElementById('resumeBtn').addEventListener('click', () => { uiClick(); resumeGame(); });
 document.getElementById('toMenuBtn').addEventListener('click', () => { uiClick(); openMenu(); });
 window.addEventListener('keydown', (e) => {
-  if (e.code === 'Escape') { if (gameState === 'playing') pauseGame(); else if (gameState === 'paused') resumeGame(); }
+  if (e.code === 'Escape') {
+    if (!document.getElementById('settings').classList.contains('hidden')) { closeSettings(); return; }
+    if (gameState === 'playing') pauseGame(); else if (gameState === 'paused') resumeGame();
+  }
   if (e.code === 'KeyM' && !e.repeat) { audio.setMuted(!audio.muted); saveStore({ muted: audio.muted }); }
   if (e.code === 'KeyL' && !e.repeat) {
     const auto = currentMap ? !!currentMap.darkLights : false;
     headlightsManual = (headlightsManual === null ? !auto : !headlightsManual);
   }
 });
+
+// ------------------------------------------------------------------ [SETTINGS]
+const settings = { quality: 'medium', bloom: false, volume: 0.55, fov: 60, sens: 1.0, invertY: false };
+function applyQuality(q) {
+  const dpr = window.devicePixelRatio || 1;
+  const presets = {
+    low: { sh: false, size: 1024, pr: 1, veg: 0.4, part: 0.5 },
+    medium: { sh: true, size: 1024, pr: Math.min(dpr, 1.5), veg: 0.75, part: 0.85 },
+    high: { sh: true, size: 2048, pr: Math.min(dpr, 2), veg: 1, part: 1 },
+  };
+  const P = presets[q] || presets.medium;
+  renderer.shadowMap.enabled = P.sh; sun.castShadow = P.sh;
+  if (sun.shadow.mapSize.x !== P.size) { sun.shadow.mapSize.set(P.size, P.size); if (sun.shadow.map) { sun.shadow.map.dispose(); sun.shadow.map = null; } }
+  renderer.setPixelRatio(P.pr);
+  qualityVeg = P.veg; qualityPart = P.part;
+  onResize();
+}
+function applySettings() {
+  applyQuality(settings.quality);
+  POST_ENABLED = settings.bloom;
+  audio.setVolume(settings.volume);
+  BASE_FOV = settings.fov; mouseSens = settings.sens; invertY = settings.invertY;
+}
+const settingsEl = document.getElementById('settings');
+const $ = (id) => document.getElementById(id);
+function syncSettingsUI() {
+  document.querySelectorAll('#qualitySeg button').forEach((b) => b.classList.toggle('on', b.dataset.q === settings.quality));
+  $('setBloom').checked = settings.bloom; $('setVol').value = settings.volume;
+  $('setFov').value = settings.fov; $('setSens').value = settings.sens; $('setInvert').checked = settings.invertY;
+}
+function openSettings() { uiClick(); syncSettingsUI(); settingsEl.classList.remove('hidden'); }
+function closeSettings() { uiClick(); settingsEl.classList.add('hidden'); }
+$('qualitySeg').addEventListener('click', (e) => {
+  const b = e.target.closest('button'); if (!b) return;
+  uiClick();
+  settings.quality = b.dataset.q; saveStore({ quality: settings.quality });
+  applyQuality(settings.quality); if (currentMap) loadMap(currentMap); syncSettingsUI();
+});
+$('setBloom').addEventListener('change', (e) => { settings.bloom = e.target.checked; POST_ENABLED = settings.bloom; saveStore({ bloom: settings.bloom }); });
+$('setVol').addEventListener('input', (e) => { settings.volume = +e.target.value; audio.setVolume(settings.volume); saveStore({ volume: settings.volume }); });
+$('setFov').addEventListener('input', (e) => { settings.fov = +e.target.value; BASE_FOV = settings.fov; saveStore({ fov: settings.fov }); });
+$('setSens').addEventListener('input', (e) => { settings.sens = +e.target.value; mouseSens = settings.sens; saveStore({ sens: settings.sens }); });
+$('setInvert').addEventListener('change', (e) => { settings.invertY = e.target.checked; invertY = settings.invertY; saveStore({ invertY: settings.invertY }); });
+$('settingsClose').addEventListener('click', closeSettings);
+$('menuSettingsBtn').addEventListener('click', openSettings);
+$('pauseSettingsBtn').addEventListener('click', openSettings);
 
 // ------------------------------------------------------------------ [FX] particles, tire tracks, camera shake
 function makeParticles(max) {
@@ -1633,7 +1726,7 @@ function updateWheelFX(v, dt) {
   // particles: emit from rear wheels when moving fast or sliding
   const intensity = clamp((speed - 4) / 22, 0, 1) + (handbrake ? 0.6 : 0);
   if (intensity > 0.02) {
-    const n = Math.min(6, Math.round(intensity * 5 * (0.5 + Math.random())));
+    const n = Math.min(6, Math.round(intensity * 5 * (0.5 + Math.random()) * qualityPart));
     for (let k = 0; k < n; k++) {
       const wi = 2 + (k % 2); // rear wheels
       _wcp.copy(v.wheelMeshes[wi].position); _wcp.y -= v.config.wheel.radius * 0.7;
@@ -1743,7 +1836,7 @@ function makeAudio() {
     g.gain.setValueAtTime(0.12, t); g.gain.exponentialRampToValueAtTime(0.001, t + 0.09);
     o.connect(g); g.connect(master); o.start(); o.stop(t + 0.1);
   }
-  return { init, resume, update, thud, hit, blip, setMuted: (m) => { muted = m; }, get muted() { return muted; }, get started() { return started; } };
+  return { init, resume, update, thud, hit, blip, setMuted: (m) => { muted = m; }, setVolume: (v) => { if (master) master.gain.value = v; }, get muted() { return muted; }, get started() { return started; } };
 }
 
 let _lastHit = 0;
@@ -1809,12 +1902,14 @@ function animate(now) {
   if (POST_ENABLED) composer.render(); else renderer.render(scene, camera);
 }
 
-// Restore persisted selection + audio preference before building the menu.
+// Restore persisted selection + settings before building the menu.
 (function restore() {
   const s = loadStore();
   if (s.mapId && MAPS[s.mapId]) selection.mapId = s.mapId;
   if (s.vehId && VEHICLES[s.vehId]) selection.vehId = s.vehId;
   if (s.muted) audio.setMuted(true);
+  for (const k of ['quality', 'bloom', 'volume', 'fov', 'sens', 'invertY']) if (s[k] !== undefined) settings[k] = s[k];
+  applySettings(); // sets shadows/pixelRatio/density/fov before the first map builds
 })();
 buildMenu();
 loadMap(MAPS[selection.mapId]); // initial preview
