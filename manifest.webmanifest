@@ -1,0 +1,16 @@
+{
+  "name": "Offroad Jeep — 3D-песочница на внедорожнике",
+  "short_name": "Offroad Jeep",
+  "description": "Браузерная 3D-игра: свободная езда на внедорожнике. Три карты, четыре машины, реалистичная физика.",
+  "start_url": ".",
+  "scope": ".",
+  "display": "fullscreen",
+  "orientation": "landscape",
+  "background_color": "#0b0e13",
+  "theme_color": "#0b0e13",
+  "lang": "ru",
+  "categories": ["games"],
+  "icons": [
+    { "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ]
+}

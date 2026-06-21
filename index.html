@@ -7,6 +7,7 @@
 <meta name="description" content="Бесплатная браузерная 3D-игра: свободная езда на внедорожнике от третьего лица. Три карты (пустыня, зима, джунгли), четыре машины, реалистичная физика. Играй прямо в браузере — без установки." />
 <meta name="theme-color" content="#0b0e13" />
 <meta name="color-scheme" content="dark" />
+<link rel="manifest" href="manifest.webmanifest" />
 <!-- Установка как веб-приложение (iOS / Android) -->
 <meta name="mobile-web-app-capable" content="yes" />
 <meta name="apple-mobile-web-app-capable" content="yes" />
@@ -218,6 +219,17 @@
     background: rgba(8,10,14,.62); border: 1px solid rgba(138,255,193,.22); border-radius: 8px;
     padding: 7px 10px; text-shadow: 0 1px 2px rgba(0,0,0,.6); }
   #devhud.hidden { display: none; }
+
+  /* ---------- Photo mode (P) ---------- */
+  body.photo #hud, body.photo #touch, body.photo #devhud { display: none !important; }
+  #photoBar { position: fixed; left: 50%; bottom: 20px; transform: translateX(-50%); z-index: 70;
+    display: flex; gap: 12px; align-items: center; padding: 9px 14px; border-radius: 12px;
+    background: rgba(8,10,14,.6); border: 1px solid rgba(255,255,255,.14); backdrop-filter: blur(7px);
+    font: 600 13px system-ui, -apple-system, sans-serif; color: var(--fg); }
+  #photoBar.hidden { display: none; }
+  #photoBar button { cursor: pointer; font: 700 13px system-ui, sans-serif; color: #10141a;
+    background: #f2c14e; border: none; border-radius: 9px; padding: 8px 14px; }
+  #photoBar .muted { color: #9fb0c0; }
 </style>
 </head>
 <body>
@@ -234,6 +246,12 @@
 </div>
 
 <div id="devhud" class="hidden"></div>
+
+<div id="photoBar" class="hidden">
+  <span>📷 Фото-режим</span>
+  <button id="photoShot">Снять PNG</button>
+  <span class="muted">P — выход</span>
+</div>
 
 <div id="hud" class="hidden">
   <div id="surfaceTag"><span class="map">—</span><span class="sep">·</span><span class="veh">—</span><span class="sep">·</span><span class="surf">—</span></div>
@@ -1912,12 +1930,14 @@ function openMenu() {
   menuEl.classList.remove('hidden');
   setVehicle(selection.vehId); // reset car to spawn for the showcase
   if (touch.enabled && document.fullscreenElement) document.exitFullscreen().catch(() => {});
+  setPhoto(false);
   updateTouchUI();
 }
 function pauseGame() {
   gameState = 'paused';
   document.getElementById('pauseInfo').textContent = `${currentMap.name} · ${player.config.name}`;
   pauseEl.classList.remove('hidden');
+  setPhoto(false);
   updateTouchUI();
 }
 function resumeGame() { gameState = 'playing'; pauseEl.classList.add('hidden'); camCtl.lastManual = -1e9; audio.resume(); updateTouchUI(); }
@@ -2357,6 +2377,34 @@ requestAnimationFrame(() => {
   const loader = document.getElementById('loader');
   if (loader && window.__errors.length === 0) loader.classList.add('hidden');
 });
+
+// ------------------------------------------------------------------ [PHOTO MODE]  (E4, key P)
+let photoMode = false;
+const photoBar = document.getElementById('photoBar');
+function setPhoto(on) {
+  photoMode = !!on && gameState === 'playing';
+  document.body.classList.toggle('photo', photoMode);
+  photoBar.classList.toggle('hidden', !photoMode);
+}
+function capturePhoto() {
+  try {
+    if (POST_ENABLED) composer.render(); else renderer.render(scene, camera); // fresh frame, buffer still intact
+    const url = renderer.domElement.toDataURL('image/png');
+    const a = document.createElement('a');
+    a.href = url; a.download = `offroad-${Date.now()}.png`;
+    document.body.appendChild(a); a.click(); a.remove();
+  } catch (e) { /* tainted canvas / unsupported -> ignore */ }
+}
+document.getElementById('photoShot').addEventListener('click', capturePhoto);
+window.addEventListener('keydown', (e) => {
+  if (e.code === 'KeyP' && !e.repeat && gameState === 'playing') setPhoto(!photoMode);
+  if (e.code === 'Enter' && photoMode && !e.repeat) capturePhoto();
+});
+
+// ------------------------------------------------------------------ [PWA] register service worker (F1)
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => { navigator.serviceWorker.register('sw.js').catch(() => {}); });
+}
 
 // ------------------------------------------------------------------ [TOUCH]
 function enterFullscreenMaybe() {
