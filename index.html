@@ -2,9 +2,32 @@
 <html lang="ru">
 <head>
 <meta charset="utf-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no" />
-<link rel="icon" href="data:," />
-<title>Offroad Jeep — песочница</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
+<title>Offroad Jeep — браузерная 3D-песочница на внедорожнике</title>
+<meta name="description" content="Бесплатная браузерная 3D-игра: свободная езда на внедорожнике от третьего лица. Три карты (пустыня, зима, джунгли), четыре машины, реалистичная физика. Играй прямо в браузере — без установки." />
+<meta name="theme-color" content="#0b0e13" />
+<meta name="color-scheme" content="dark" />
+<!-- Установка как веб-приложение (iOS / Android) -->
+<meta name="mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<meta name="apple-mobile-web-app-title" content="Offroad Jeep" />
+<!-- Карточка-превью при шеринге ссылки (Open Graph + Twitter) -->
+<meta property="og:type" content="website" />
+<meta property="og:site_name" content="Offroad Jeep" />
+<meta property="og:title" content="Offroad Jeep — 3D-песочница на внедорожнике" />
+<meta property="og:description" content="Свободная езда на внедорожнике в браузере: три карты, четыре машины, реалистичная физика. Без установки — открой и поезжай." />
+<meta property="og:url" content="https://emorozoff.github.io/offroad-jeep/" />
+<meta property="og:image" content="https://emorozoff.github.io/offroad-jeep/og-image.jpg" />
+<meta property="og:image:width" content="1200" />
+<meta property="og:image:height" content="630" />
+<meta name="twitter:card" content="summary_large_image" />
+<meta name="twitter:title" content="Offroad Jeep — 3D-песочница на внедорожнике" />
+<meta name="twitter:description" content="Свободная езда на внедорожнике в браузере: три карты, четыре машины, реалистичная физика." />
+<meta name="twitter:image" content="https://emorozoff.github.io/offroad-jeep/og-image.jpg" />
+<!-- Иконка: встроенный SVG (руль) -->
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%230b0e13'/%3E%3Cg fill='none' stroke='%23f2c14e' stroke-width='2.4'%3E%3Ccircle cx='16' cy='16' r='9'/%3E%3Ccircle cx='16' cy='16' r='2.4' fill='%23f2c14e' stroke='none'/%3E%3Cpath d='M16 13.6V7M13.7 17.4l-5.6 3.2M18.3 17.4l5.6 3.2'/%3E%3C/g%3E%3C/svg%3E" />
+<link rel="apple-touch-icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%230b0e13'/%3E%3Cg fill='none' stroke='%23f2c14e' stroke-width='2.4'%3E%3Ccircle cx='16' cy='16' r='9'/%3E%3Ccircle cx='16' cy='16' r='2.4' fill='%23f2c14e' stroke='none'/%3E%3Cpath d='M16 13.6V7M13.7 17.4l-5.6 3.2M18.3 17.4l5.6 3.2'/%3E%3C/g%3E%3C/svg%3E" />
 <style>
   :root { --fg: #e8eef2; }
   * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -144,6 +167,50 @@
   #settingsClose { margin-top: 12px; cursor: pointer; font: 700 15px system-ui, sans-serif; color: #10141a;
     background: #f2c14e; border: none; border-radius: 10px; padding: 11px 22px; }
   #settingsClose:hover { filter: brightness(1.08); }
+
+  /* ---------- Mobile touch controls ---------- */
+  #touch { position: fixed; inset: 0; z-index: 35; pointer-events: none;
+    -webkit-user-select: none; user-select: none; touch-action: none; }
+  #touch.hidden { display: none; }
+  #touch > * { pointer-events: auto; }
+  body.touch #hints { display: none; }            /* keyboard hints are useless on touch */
+  #touch button { -webkit-tap-highlight-color: transparent; touch-action: none;
+    font: 800 13px/1 system-ui, -apple-system, sans-serif; color: var(--fg); cursor: pointer; }
+  /* steering joystick (analog) */
+  #tSteer { position: absolute; left: calc(20px + env(safe-area-inset-left)); bottom: calc(20px + env(safe-area-inset-bottom));
+    width: 132px; height: 132px; border-radius: 50%; background: rgba(12,16,22,.4);
+    border: 1.5px solid rgba(255,255,255,.16); backdrop-filter: blur(4px); touch-action: none; }
+  #tSteer::after { content: '↔'; position: absolute; inset: 0; display: flex; align-items: center;
+    justify-content: center; font-size: 22px; color: rgba(255,255,255,.22); }
+  #tKnob { position: absolute; left: 50%; top: 50%; width: 56px; height: 56px; margin: -28px 0 0 -28px;
+    border-radius: 50%; background: rgba(242,193,78,.88); box-shadow: 0 3px 12px rgba(0,0,0,.45);
+    transition: transform .05s linear; }
+  /* pedals */
+  #tGas, #tBrake { position: absolute; bottom: calc(22px + env(safe-area-inset-bottom)); border-radius: 20px;
+    display: flex; align-items: center; justify-content: center; border: 1.5px solid rgba(255,255,255,.18);
+    backdrop-filter: blur(4px); font-weight: 800; letter-spacing: .04em; }
+  #tGas { right: calc(22px + env(safe-area-inset-right)); width: 106px; height: 106px;
+    background: rgba(70,209,122,.22); color: #bff3d2; font-size: 16px; }
+  #tBrake { right: calc(140px + env(safe-area-inset-right)); width: 88px; height: 88px;
+    background: rgba(255,118,118,.2); color: #ffd4d4; font-size: 14px; }
+  #tGas.act { background: rgba(70,209,122,.5); }
+  #tBrake.act { background: rgba(255,118,118,.46); }
+  /* handbrake */
+  #tHand { position: absolute; right: calc(150px + env(safe-area-inset-right)); bottom: calc(132px + env(safe-area-inset-bottom));
+    width: 62px; height: 62px; border-radius: 50%; background: rgba(12,16,22,.45);
+    border: 1.5px solid rgba(255,255,255,.18); backdrop-filter: blur(4px); font-size: 12px; color: #f2c14e; }
+  #tHand.act { background: rgba(242,193,78,.5); color: #10141a; }
+  /* top-right utility cluster */
+  #tTop { position: absolute; top: calc(12px + env(safe-area-inset-top)); right: calc(12px + env(safe-area-inset-right));
+    display: flex; gap: 8px; }
+  #tTop button { width: 46px; height: 46px; border-radius: 50%; background: rgba(12,16,22,.5);
+    border: 1.5px solid rgba(255,255,255,.16); backdrop-filter: blur(5px); font-size: 16px; color: #cfe0ee; }
+  #tTop button:active { background: rgba(255,255,255,.16); }
+  /* relocate gauges to the top-left so thumbs (bottom corners) don't cover them */
+  body.touch #speedo { top: 10px; left: calc(10px + env(safe-area-inset-left)); right: auto; bottom: auto; width: 124px; height: 124px; }
+  body.touch #speedNum { bottom: 30px; font-size: 23px; }
+  body.touch #speedUnit { bottom: 19px; }
+  body.touch #incl { top: 30px; left: calc(144px + env(safe-area-inset-left)); right: auto; bottom: auto; }
 </style>
 </head>
 <body>
@@ -197,6 +264,19 @@
       <circle cx="40" cy="40" r="32" fill="none" stroke="rgba(255,255,255,.28)" stroke-width="1.5"/>
       <path d="M 24 40 L 33 40 M 47 40 L 56 40 M 40 38 L 40 42" stroke="#f2c14e" stroke-width="2" fill="none"/>
     </svg>
+  </div>
+</div>
+
+<div id="touch" class="hidden" aria-hidden="true">
+  <div id="tSteer"><div id="tKnob"></div></div>
+  <button id="tBrake">ТОРМ</button>
+  <button id="tGas">ГАЗ</button>
+  <button id="tHand">РУЧ</button>
+  <div id="tTop">
+    <button id="tReset" title="Сброс / перевернуть (R)">↻</button>
+    <button id="tCam" title="Камера (C)">C</button>
+    <button id="tLight" title="Фары (L)">L</button>
+    <button id="tPause" title="Пауза">⏸</button>
   </div>
 </div>
 
@@ -1160,6 +1240,11 @@ const STOP_DEFAULT = new Set(['Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'Arr
 window.addEventListener('keydown', (e) => { keys[e.code] = true; if (STOP_DEFAULT.has(e.code)) e.preventDefault(); });
 window.addEventListener('keyup', (e) => { keys[e.code] = false; });
 window.addEventListener('blur', () => { for (const k in keys) keys[k] = false; });
+
+// --- Mobile touch controls: feed the SAME analog steer/throttle/brake layer as the gamepad ---
+const touch = { enabled: false, steer: 0, gas: 0, brake: 0, hand: false };
+let touchRoot = null;
+function updateTouchUI() { if (touchRoot) touchRoot.classList.toggle('hidden', !(touch.enabled && gameState === 'playing')); }
 const pressed = (...codes) => codes.some((c) => keys[c]);
 
 const _fwd = new CANNON.Vec3();
@@ -1210,6 +1295,12 @@ function applyVehicleControls(v, dt) {
     throttle = Math.max(throttle, gpInput.throttle);
     braking = Math.max(braking, gpInput.brake);
     if (gpInput.handbrake) handbrake = true;
+  }
+  if (touch.enabled) {
+    if (Math.abs(touch.steer) > 0.001) steerIn = touch.steer; // already in steerIn convention (+ = left)
+    throttle = Math.max(throttle, touch.gas);
+    braking = Math.max(braking, touch.brake);
+    if (touch.hand) handbrake = true;
   }
   const accel = throttle > 0.05;
   const back = braking > 0.05;
@@ -1388,6 +1479,28 @@ window.addEventListener('keydown', (e) => {
     camCtl.dist = clamp(camCtl.dist + e.deltaY * 0.012, camCtl.minDist, camCtl.maxDist);
   }, { passive: false });
   el.addEventListener('contextmenu', (e) => e.preventDefault());
+  // Touch drag on empty canvas area = camera look. Overlay buttons capture their own touches,
+  // and the #touch container is pointer-events:none in its gaps, so those touches reach the canvas.
+  let lookId = null, lookX = 0, lookY = 0;
+  el.addEventListener('touchstart', (e) => {
+    if (gameState !== 'playing' || lookId !== null) return;
+    const t = e.changedTouches[0]; lookId = t.identifier; lookX = t.clientX; lookY = t.clientY;
+    camCtl.lastManual = performance.now();
+  }, { passive: true });
+  el.addEventListener('touchmove', (e) => {
+    if (lookId === null) return;
+    for (const t of e.changedTouches) {
+      if (t.identifier !== lookId) continue;
+      const dx = t.clientX - lookX, dy = t.clientY - lookY; lookX = t.clientX; lookY = t.clientY;
+      camCtl.az -= dx * 0.005 * mouseSens;
+      camCtl.pitch = clamp(camCtl.pitch + (invertY ? 1 : -1) * dy * 0.005 * mouseSens, 0.06, 1.35);
+      camCtl.lastManual = performance.now();
+      e.preventDefault(); // suppress synthesized mouse events / page pan
+    }
+  }, { passive: false });
+  const endLook = (e) => { for (const t of e.changedTouches) if (t.identifier === lookId) lookId = null; };
+  el.addEventListener('touchend', endLook);
+  el.addEventListener('touchcancel', endLook);
 })();
 
 // ------------------------------------------------------------------ [HUD]
@@ -1633,19 +1746,23 @@ function startGame() {
   hudEl.classList.remove('hidden');
   camCtl.lastManual = -1e9;
   audio.init(); audio.resume(); // user gesture -> audio allowed
+  updateTouchUI();
 }
 function openMenu() {
   gameState = 'menu';
   hudEl.classList.add('hidden'); pauseEl.classList.add('hidden');
   menuEl.classList.remove('hidden');
   setVehicle(selection.vehId); // reset car to spawn for the showcase
+  if (touch.enabled && document.fullscreenElement) document.exitFullscreen().catch(() => {});
+  updateTouchUI();
 }
 function pauseGame() {
   gameState = 'paused';
   document.getElementById('pauseInfo').textContent = `${currentMap.name} · ${player.config.name}`;
   pauseEl.classList.remove('hidden');
+  updateTouchUI();
 }
-function resumeGame() { gameState = 'playing'; pauseEl.classList.add('hidden'); camCtl.lastManual = -1e9; audio.resume(); }
+function resumeGame() { gameState = 'playing'; pauseEl.classList.add('hidden'); camCtl.lastManual = -1e9; audio.resume(); updateTouchUI(); }
 
 document.getElementById('mapCards').addEventListener('click', (e) => { const c = e.target.closest('.card'); if (c) selectMap(c.dataset.id); });
 document.getElementById('vehCards').addEventListener('click', (e) => { const c = e.target.closest('.card'); if (c) selectVeh(c.dataset.id); });
@@ -1656,7 +1773,7 @@ function randomMap() {
   loadMap({ ...base, terrain: { ...base.terrain, seed }, obstacles: { ...base.obstacles, seed } });
 }
 document.getElementById('randomBtn').addEventListener('click', randomMap);
-document.getElementById('startBtn').addEventListener('click', () => { uiClick(); startGame(); });
+document.getElementById('startBtn').addEventListener('click', () => { uiClick(); enterFullscreenMaybe(); startGame(); });
 document.getElementById('resumeBtn').addEventListener('click', () => { uiClick(); resumeGame(); });
 document.getElementById('toMenuBtn').addEventListener('click', () => { uiClick(); openMenu(); });
 window.addEventListener('keydown', (e) => {
@@ -2058,6 +2175,76 @@ requestAnimationFrame(() => {
   if (loader && window.__errors.length === 0) loader.classList.add('hidden');
 });
 
+// ------------------------------------------------------------------ [TOUCH]
+function enterFullscreenMaybe() {
+  if (!touch.enabled) return;
+  const el = document.documentElement;
+  const req = el.requestFullscreen || el.webkitRequestFullscreen;
+  if (!req) return;
+  try {
+    const p = req.call(el);
+    if (p && p.then) p.then(() => {
+      try { if (screen.orientation && screen.orientation.lock) screen.orientation.lock('landscape').catch(() => {}); } catch (_) {}
+    }).catch(() => {});
+  } catch (_) {}
+}
+(function setupTouchControls() {
+  touch.enabled = ('ontouchstart' in window) || (navigator.maxTouchPoints || 0) > 0 || /[?&]touch=1/.test(location.search);
+  touchRoot = document.getElementById('touch');
+  if (!touch.enabled || !touchRoot) { updateTouchUI(); return; }
+  document.body.classList.add('touch');
+
+  // Steering joystick — analog: horizontal drag steers, knob follows.
+  const steerEl = document.getElementById('tSteer');
+  const knobEl = document.getElementById('tKnob');
+  let steerPid = null;
+  const steerTo = (cx, cy) => {
+    const r = steerEl.getBoundingClientRect();
+    const ox = r.left + r.width / 2, oy = r.top + r.height / 2;
+    const max = r.width / 2 - 18;
+    let dx = cx - ox, dy = cy - oy;
+    const len = Math.hypot(dx, dy) || 1;
+    if (len > max) { dx = dx / len * max; dy = dy / len * max; }
+    knobEl.style.transform = `translate(${dx}px, ${dy}px)`;
+    touch.steer = clamp(-dx / max, -1, 1); // drag right -> steer right (negative steerIn)
+  };
+  steerEl.addEventListener('pointerdown', (e) => { steerPid = e.pointerId; steerEl.setPointerCapture(e.pointerId); steerTo(e.clientX, e.clientY); e.preventDefault(); });
+  steerEl.addEventListener('pointermove', (e) => { if (e.pointerId === steerPid) { steerTo(e.clientX, e.clientY); e.preventDefault(); } });
+  const steerEnd = (e) => { if (e.pointerId === steerPid) { steerPid = null; touch.steer = 0; knobEl.style.transform = ''; camCtl.lastManual = performance.now(); } };
+  steerEl.addEventListener('pointerup', steerEnd);
+  steerEl.addEventListener('pointercancel', steerEnd);
+
+  // Hold pedals (gas / brake / handbrake) — pointer capture so a drag-off still releases.
+  const hold = (id, set) => {
+    const el = document.getElementById(id);
+    el.addEventListener('pointerdown', (e) => { el.setPointerCapture(e.pointerId); set(1); el.classList.add('act'); e.preventDefault(); });
+    const off = () => { set(0); el.classList.remove('act'); };
+    el.addEventListener('pointerup', off);
+    el.addEventListener('pointercancel', off);
+  };
+  hold('tGas', (v) => { touch.gas = v; });
+  hold('tBrake', (v) => { touch.brake = v; });
+  hold('tHand', (v) => { touch.hand = !!v; });
+
+  // Tap buttons — mirror the keyboard shortcuts.
+  const tap = (id, fn) => { document.getElementById(id).addEventListener('click', (e) => { e.preventDefault(); fn(); }); };
+  tap('tReset', () => { if (gameState === 'playing') resetVehicle(player); });
+  tap('tCam', () => { if (gameState === 'playing') { camMode = CAM_MODES[(CAM_MODES.indexOf(camMode) + 1) % CAM_MODES.length]; camCtl.lastManual = -1e9; } });
+  tap('tLight', () => { const a = currentMap ? !!currentMap.darkLights : false; headlightsManual = (headlightsManual === null ? !a : !headlightsManual); });
+  tap('tPause', () => { if (gameState === 'playing') pauseGame(); else if (gameState === 'paused') resumeGame(); });
+
+  // Release everything if the page is hidden / loses focus.
+  const releaseAll = () => {
+    touch.gas = 0; touch.brake = 0; touch.hand = false; touch.steer = 0;
+    if (knobEl) knobEl.style.transform = '';
+    document.querySelectorAll('#touch .act').forEach((n) => n.classList.remove('act'));
+  };
+  window.addEventListener('blur', releaseAll);
+  document.addEventListener('visibilitychange', () => { if (document.hidden) releaseAll(); });
+
+  updateTouchUI();
+})();
+
 // Expose handles for debugging / verification.
 Object.assign(DBG, {
   THREE, CANNON, scene, camera, renderer, applyEnvironment,
@@ -2066,7 +2253,7 @@ Object.assign(DBG, {
   loadMap, MAPS, SURF, terrain, obstacles, currentMap,
   setVehicle, VEHICLES, VEHICLE_IDS,
   selection, startGame, openMenu, pauseGame, resumeGame, selectMap, selectVeh,
-  fxParticles, fxTracks, addShake, audio,
+  fxParticles, fxTracks, addShake, audio, touch, enterFullscreenMaybe,
   setSurface: (s) => { currentSurfaceAt = () => s; }, // test hook
   setCamMode: (m) => { camMode = m; },
   setPost: (on) => { POST_ENABLED = on; },
