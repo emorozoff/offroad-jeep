@@ -211,6 +211,13 @@
   body.touch #speedNum { bottom: 30px; font-size: 23px; }
   body.touch #speedUnit { bottom: 19px; }
   body.touch #incl { top: 30px; left: calc(144px + env(safe-area-inset-left)); right: auto; bottom: auto; }
+
+  /* ---------- Dev overlay (toggle with ~) ---------- */
+  #devhud { position: fixed; top: 8px; left: 8px; z-index: 60; pointer-events: none; white-space: pre;
+    font: 600 12px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; color: #8affc1;
+    background: rgba(8,10,14,.62); border: 1px solid rgba(138,255,193,.22); border-radius: 8px;
+    padding: 7px 10px; text-shadow: 0 1px 2px rgba(0,0,0,.6); }
+  #devhud.hidden { display: none; }
 </style>
 </head>
 <body>
@@ -225,6 +232,8 @@
   <h2>Ошибка</h2>
   <pre id="fatalMsg"></pre>
 </div>
+
+<div id="devhud" class="hidden"></div>
 
 <div id="hud" class="hidden">
   <div id="surfaceTag"><span class="map">—</span><span class="sep">·</span><span class="veh">—</span><span class="sep">·</span><span class="surf">—</span></div>
@@ -624,7 +633,10 @@ function buildTerrain(P) {
   }
   const mat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 1.0, metalness: 0.0, flatShading: false });
   const mesh = new THREE.Mesh(geo, mat);
-  mesh.receiveShadow = true; mesh.castShadow = true;
+  // A2: terrain only RECEIVES shadows. Casting its ~40k tris into the shadow map every frame is the
+  // biggest shadow-pass cost; dune self-shadowing is subtle and the sun sits high. Casters (car, rocks,
+  // trees) still drop shadows onto the terrain because it keeps receiveShadow.
+  mesh.receiveShadow = true; mesh.castShadow = false;
   scene.add(mesh);
 
   // --- Invisible perimeter walls (backstop beyond the rim) ---
@@ -700,6 +712,9 @@ function buildObstacles(P) {
   const group = new THREE.Group();
   scene.add(group);
   const rocks = [], ramps = [], logs = [];
+  // A1: collect each obstacle's geometry baked into world space, then merge per material into one mesh.
+  const rockGeos = [], rampGeos = [], logGeos = [];
+  const _m4 = new THREE.Matrix4(), _q = new THREE.Quaternion(), _p = new THREE.Vector3(), _e = new THREE.Euler(), _one = new THREE.Vector3(1, 1, 1);
   const rockMat = new THREE.MeshStandardMaterial({ color: P.rockColor, roughness: 1.0, metalness: 0.0, flatShading: false });
   const rampMat = new THREE.MeshStandardMaterial({ color: P.rampColor, roughness: 0.85, metalness: 0.1, flatShading: true });
   const logMat = new THREE.MeshStandardMaterial({ color: P.logColor, roughness: 0.95 });
@@ -737,12 +752,10 @@ function buildObstacles(P) {
     for (let v = 0; v < pos.count; v++) // each unique vertex jittered once -> faces stay connected
       pos.setXYZ(v, pos.getX(v) * (0.82 + rng() * 0.36), pos.getY(v) * (0.78 + rng() * 0.44), pos.getZ(v) * (0.82 + rng() * 0.36));
     geo.computeVertexNormals();
-    const m = new THREE.Mesh(geo, rockMat);
-    m.position.copy(body.position);
-    m.rotation.set(rng() * 6.283, rng() * 6.283, rng() * 6.283);
-    m.castShadow = true; m.receiveShadow = true;
-    group.add(m);
-    rocks.push({ body, mesh: m, r });
+    _e.set(rng() * 6.283, rng() * 6.283, rng() * 6.283);
+    geo.applyMatrix4(_m4.compose(_p.copy(body.position), _q.setFromEuler(_e), _one)); // bake world transform
+    rockGeos.push(geo);
+    rocks.push({ body, r });
   }
 
   // Ramps: solid wedge tapering to ground at the low (+z) tip, launches the car off the back.
@@ -766,11 +779,9 @@ function buildObstacles(P) {
     body.quaternion.setFromEuler(0, yaw, 0);
     body.position.set(x, minH - 0.15, z);
     world.addBody(body);
-    const m = new THREE.Mesh(geometry, rampMat);
-    m.position.copy(body.position); m.quaternion.copy(body.quaternion);
-    m.castShadow = true; m.receiveShadow = true;
-    group.add(m);
-    ramps.push({ body, mesh: m, W, L, H, tilt, yaw, x, z });
+    geometry.applyMatrix4(_m4.compose(_p.copy(body.position), _q.copy(body.quaternion), _one)); // bake world transform
+    rampGeos.push(geometry);
+    ramps.push({ body, W, L, H, tilt, yaw, x, z });
   }
 
   // Logs: thin box collider + cylinder visual lying on its side.
@@ -787,12 +798,26 @@ function buildObstacles(P) {
     world.addBody(body);
     const geo = new THREE.CylinderGeometry(rad, rad, len, 12);
     geo.rotateX(Math.PI / 2); // cylinder axis Y -> Z, matching the box's long axis
-    const m = new THREE.Mesh(geo, logMat);
-    m.position.copy(body.position); m.quaternion.copy(body.quaternion);
-    m.castShadow = true; m.receiveShadow = true;
-    group.add(m);
-    logs.push({ body, mesh: m, len, rad });
+    geo.applyMatrix4(_m4.compose(_p.copy(body.position), _q.copy(body.quaternion), _one)); // bake world transform
+    logGeos.push(geo);
+    logs.push({ body, len, rad });
   }
+
+  // A1: merge each material's world-baked geometries into a single mesh (3 draw calls instead of ~50-80,
+  // in both the main pass and the shadow pass). Physics bodies stay separate; teardown disposes via group.
+  const mergeInto = (geos, mat) => {
+    if (!geos.length) return;
+    const merged = mergeGeometries(geos, false);
+    if (!merged) { console.warn('[A1] obstacle merge failed'); return; }
+    geos.forEach((g) => g.dispose());
+    const mesh = new THREE.Mesh(merged, mat);
+    mesh.castShadow = true; mesh.receiveShadow = true;
+    mesh.frustumCulled = false; // spans the whole map; never worth culling
+    group.add(mesh);
+  };
+  mergeInto(rockGeos, rockMat);
+  mergeInto(rampGeos, rampMat);
+  mergeInto(logGeos, logMat);
 
   return { group, rocks, ramps, logs, params: P };
 }
@@ -2104,6 +2129,28 @@ function onChassisCollide(e) {
 }
 const audio = makeAudio();
 
+// ------------------------------------------------------------------ [DEV OVERLAY]
+// Toggle with ~ (Backquote): live FPS + renderer.info to measure optimizations.
+let devHudOn = false;
+const devHudEl = document.getElementById('devhud');
+let fpsAvg = 0, _devAccum = 0;
+window.addEventListener('keydown', (e) => {
+  if (e.code === 'Backquote' && !e.repeat) { devHudOn = !devHudOn; devHudEl.classList.toggle('hidden', !devHudOn); }
+});
+function updateDevHud(dt) {
+  if (!devHudOn) return;
+  if (dt > 0) fpsAvg = fpsAvg ? fpsAvg * 0.92 + (1 / dt) * 0.08 : 1 / dt;
+  _devAccum += dt;
+  if (_devAccum < 0.12) return; // throttle DOM writes to ~8 Hz
+  _devAccum = 0;
+  const r = renderer.info;
+  devHudEl.textContent =
+    `${fpsAvg.toFixed(0)} fps   ${(dt * 1000).toFixed(1)} ms\n` +
+    `draws ${r.render.calls}   tris ${(r.render.triangles / 1000).toFixed(1)}k\n` +
+    `geom ${r.memory.geometries}   tex ${r.memory.textures}   prog ${(r.programs || []).length}\n` +
+    `${currentMap ? currentMap.name : '—'} · ${player.config.name} · ${gameState}`;
+}
+
 // ------------------------------------------------------------------ [LOOP]
 let lastTime = performance.now();
 let frame = 0;
@@ -2153,6 +2200,7 @@ function animate(now) {
   audio.update(player, gameState === 'playing');
 
   if (POST_ENABLED) composer.render(); else renderer.render(scene, camera);
+  updateDevHud(dt);
 }
 
 // Restore persisted selection + settings before building the menu.
