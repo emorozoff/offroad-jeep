@@ -1392,6 +1392,7 @@ const pressed = (...codes) => codes.some((c) => keys[c]);
 
 const _fwd = new CANNON.Vec3();
 const _localFwd = new CANNON.Vec3(0, 0, 1);
+const _airTq = new CANNON.Vec3(), _airTqW = new CANNON.Vec3(); // C1 air-control torque (local, world)
 function forwardSpeedOf(v) {
   v.chassisBody.quaternion.vmult(_localFwd, _fwd); // local +z in world
   return v.chassisBody.velocity.dot(_fwd);
@@ -1470,6 +1471,20 @@ function applyVehicleControls(v, dt) {
     v.vehicle.setBrake(brake, i);
   }
   if (handbrake) { v.vehicle.setBrake(cfg.handbrakeForce, 2); v.vehicle.setBrake(cfg.handbrakeForce, 3); }
+
+  // C1: air control — while the chassis is clearly off the ground, steer torque rolls and throttle/brake
+  // pitches the chassis so you can line up jump landings. Capped so it can never become an uncontrolled spin.
+  // Ground signal is height-above-terrain (the wheel raycast isInContact flag is unreliable in this sim).
+  const clearance = v.chassisBody.position.y - groundHeightAt(v.chassisBody.position.x, v.chassisBody.position.z);
+  v.airborne = clearance > 2.5;
+  if (v.airborne) {
+    const b = v.chassisBody, T = 7.5; // local axes: x = pitch, z = roll (forward is +z)
+    _airTq.set((braking - throttle) * T, 0, -steerIn * T); // throttle -> nose down, brake -> nose up
+    b.quaternion.vmult(_airTq, _airTqW);
+    b.angularVelocity.x += _airTqW.x * dt; b.angularVelocity.y += _airTqW.y * dt; b.angularVelocity.z += _airTqW.z * dt;
+    const av = b.angularVelocity, mag = Math.hypot(av.x, av.y, av.z), CAP = 4.5;
+    if (mag > CAP) { const k = CAP / mag; av.x *= k; av.y *= k; av.z *= k; }
+  }
 
   // --- drivetrain: rpm (0..1) + gear, for tachometer + engine sound ---
   const gc = cfg.gears || 5;
