@@ -487,6 +487,56 @@ function makeEnvRT(env) {
 }
 
 // World environment configuration applied per scene.
+// ------------------------------------------------------------------ [DAY/NIGHT]  (B2, key N)
+// Night is a factor 0..1 lerped on top of whatever the per-map day palette set, so it works on
+// every map without re-tuning each one. Drives sun/hemi/sky/fog + fades in stars + auto-headlights.
+let nightFactor = 0, nightTarget = 0;
+const dayEnv = {};
+const NIGHT = {
+  skyTop: new THREE.Color(0x04060f), skyBottom: new THREE.Color(0x0b1530), fog: new THREE.Color(0x080c18),
+  hemiSky: new THREE.Color(0x2a3a5c), hemiGround: new THREE.Color(0x0a0c12), hemiIntMul: 0.22,
+  sunColor: new THREE.Color(0x9fb4e0), sunIntMul: 0.05,
+};
+function captureDayEnv(env) {
+  dayEnv.skyTop = new THREE.Color(env.skyTop); dayEnv.skyBottom = new THREE.Color(env.skyBottom);
+  dayEnv.fog = new THREE.Color(env.fog);
+  dayEnv.hemiSky = new THREE.Color(env.hemiSky); dayEnv.hemiGround = new THREE.Color(env.hemiGround); dayEnv.hemiInt = env.hemiInt;
+  dayEnv.sunColor = new THREE.Color(env.sunColor); dayEnv.sunInt = env.sunInt;
+}
+function applyNight(f) {
+  if (!dayEnv.sunColor) return;
+  const sky = scene.userData.sky;
+  if (sky) {
+    sky.material.uniforms.topColor.value.copy(dayEnv.skyTop).lerp(NIGHT.skyTop, f);
+    sky.material.uniforms.bottomColor.value.copy(dayEnv.skyBottom).lerp(NIGHT.skyBottom, f);
+  }
+  if (scene.fog) scene.fog.color.copy(dayEnv.fog).lerp(NIGHT.fog, f);
+  hemi.color.copy(dayEnv.hemiSky).lerp(NIGHT.hemiSky, f);
+  hemi.groundColor.copy(dayEnv.hemiGround).lerp(NIGHT.hemiGround, f);
+  hemi.intensity = dayEnv.hemiInt * (1 - f * (1 - NIGHT.hemiIntMul));
+  sun.color.copy(dayEnv.sunColor).lerp(NIGHT.sunColor, f);
+  sun.intensity = dayEnv.sunInt * (1 - f * (1 - NIGHT.sunIntMul));
+  scene.environmentIntensity = 0.32 * (1 - f * 0.7);
+  if (starField) starField.material.opacity = clamp((f - 0.35) / 0.5, 0, 1);
+}
+function darkNow() { return (currentMap ? !!currentMap.darkLights : false) || nightFactor > 0.4; }
+
+let starField = null;
+(function makeStars() {
+  const NS = 1400, pos = new Float32Array(NS * 3);
+  let s = 0x9e3779b9 >>> 0;
+  const rnd = () => { s = (s * 1664525 + 1013904223) >>> 0; return s / 4294967296; };
+  for (let i = 0; i < NS; i++) {
+    let x, y, z, d2;
+    do { x = rnd() * 2 - 1; y = rnd(); z = rnd() * 2 - 1; d2 = x * x + y * y + z * z; } while (d2 < 0.06 || d2 > 1);
+    const inv = 900 / Math.sqrt(d2);
+    pos[i * 3] = x * inv; pos[i * 3 + 1] = y * inv + 40; pos[i * 3 + 2] = z * inv;
+  }
+  const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  const m = new THREE.PointsMaterial({ color: 0xcfe0ff, size: 2.2, sizeAttenuation: false, transparent: true, opacity: 0, depthWrite: false, fog: false });
+  starField = new THREE.Points(g, m); starField.renderOrder = -1; scene.add(starField);
+})();
+
 function applyEnvironment(env) {
   if (scene.userData.sky) { scene.remove(scene.userData.sky); scene.userData.sky.geometry.dispose(); scene.userData.sky.material.dispose(); }
   const sky = makeSky(env.skyTop, env.skyBottom);
@@ -500,6 +550,7 @@ function applyEnvironment(env) {
   scene.userData.envRT = makeEnvRT(env);
   scene.environment = scene.userData.envRT.texture;
   scene.environmentIntensity = 0.32; // subtle reflections without blowing out flat surfaces
+  captureDayEnv(env); applyNight(nightFactor); // B2: re-apply night tint over the new day palette
 }
 
 const DEFAULT_ENV = {
@@ -548,6 +599,66 @@ function makeNoise(seed) {
 // SAME world-coordinate mapping, so collision and visuals can never diverge.
 // Mapping (heightfield rotated -90deg about X, body at (-half,0,half)):
 //   worldX = i*es - half ,  height = matrix[i][j] ,  worldZ = half - j*es
+// B1: shared seamless detail textures (albedo grain + normal bumps) generated once on a canvas.
+// Tiled across every terrain; vertex colors still provide the biome tint, the texture adds micro-relief.
+let _terrainDetail = null;
+function terrainDetailTextures() {
+  if (_terrainDetail) return _terrainDetail;
+  const S = 256;
+  // seamless multi-octave value noise -> height buffer
+  const H = new Float32Array(S * S);
+  const octave = (cells, amp, seed) => {
+    let s = (seed * 2654435761) >>> 0;
+    const rnd = () => { s = (s * 1664525 + 1013904223) >>> 0; return s / 4294967296; };
+    const g = new Float32Array(cells * cells);
+    for (let i = 0; i < g.length; i++) g[i] = rnd();
+    const at = (x, y) => g[(y % cells) * cells + (x % cells)];
+    for (let y = 0; y < S; y++) for (let x = 0; x < S; x++) {
+      const fx = x / S * cells, fy = y / S * cells;
+      const x0 = Math.floor(fx), y0 = Math.floor(fy);
+      const tx = fx - x0, ty = fy - y0;
+      const sx = tx * tx * (3 - 2 * tx), sy = ty * ty * (3 - 2 * ty);
+      const a = at(x0, y0), b = at(x0 + 1, y0), c = at(x0, y0 + 1), d = at(x0 + 1, y0 + 1);
+      H[y * S + x] += amp * ((a * (1 - sx) + b * sx) * (1 - sy) + (c * (1 - sx) + d * sx) * sy);
+    }
+  };
+  octave(8, 0.55, 1); octave(16, 0.28, 7); octave(32, 0.13, 13); octave(64, 0.06, 29);
+
+  // albedo: near-white grain so the per-vertex biome colour stays dominant
+  const aC = document.createElement('canvas'); aC.width = aC.height = S;
+  const aCtx = aC.getContext('2d'); const aImg = aCtx.createImageData(S, S);
+  for (let i = 0; i < S * S; i++) {
+    const v = 200 + H[i] * 70; // ~0.78..1.0 grey
+    aImg.data[i * 4] = aImg.data[i * 4 + 1] = aImg.data[i * 4 + 2] = clamp(v, 150, 255); aImg.data[i * 4 + 3] = 255;
+  }
+  aCtx.putImageData(aImg, 0, 0);
+
+  // normal: encode gradient of the height buffer (wrapped) into RGB
+  const nC = document.createElement('canvas'); nC.width = nC.height = S;
+  const nCtx = nC.getContext('2d'); const nImg = nCtx.createImageData(S, S);
+  const STR = 2.2;
+  for (let y = 0; y < S; y++) for (let x = 0; x < S; x++) {
+    const hl = H[y * S + (x + S - 1) % S], hr = H[y * S + (x + 1) % S];
+    const hd = H[((y + S - 1) % S) * S + x], hu = H[((y + 1) % S) * S + x];
+    let nx = (hl - hr) * STR, ny = (hd - hu) * STR, nz = 1.0;
+    const inv = 1 / Math.hypot(nx, ny, nz); nx *= inv; ny *= inv; nz *= inv;
+    const k = (y * S + x) * 4;
+    nImg.data[k] = (nx * 0.5 + 0.5) * 255; nImg.data[k + 1] = (ny * 0.5 + 0.5) * 255;
+    nImg.data[k + 2] = (nz * 0.5 + 0.5) * 255; nImg.data[k + 3] = 255;
+  }
+  nCtx.putImageData(nImg, 0, 0);
+
+  const mk = (canvas, srgb) => {
+    const t = new THREE.CanvasTexture(canvas);
+    t.wrapS = t.wrapT = THREE.RepeatWrapping;
+    if (srgb) t.colorSpace = THREE.SRGBColorSpace;
+    t.anisotropy = Math.min(8, renderer.capabilities.getMaxAnisotropy());
+    return t;
+  };
+  _terrainDetail = { map: mk(aC, true), normalMap: mk(nC, false) };
+  return _terrainDetail;
+}
+
 function buildTerrain(P) {
   const N = P.gridSize + 1;          // samples per side
   const es = P.elementSize;
@@ -595,6 +706,8 @@ function buildTerrain(P) {
   // --- Visual mesh (same matrix + same mapping) ---
   const verts = new Float32Array(N * N * 3);
   const cols = new Float32Array(N * N * 3);
+  const uvs = new Float32Array(N * N * 2);
+  const UVT = 1 / 5.5; // detail texture tiles every ~5.5 world metres
   const cLow = new THREE.Color(P.colorLow), cHigh = new THREE.Color(P.colorHigh);
   const tmpC = new THREE.Color();
   const range = Math.max(0.001, maxH - minH);
@@ -603,6 +716,8 @@ function buildTerrain(P) {
       const k = (i * N + j) * 3;
       const h = matrix[i][j];
       verts[k] = i * es - half; verts[k + 1] = h; verts[k + 2] = half - j * es;
+      const kuv = (i * N + j) * 2;
+      uvs[kuv] = (i * es - half) * UVT; uvs[kuv + 1] = (half - j * es) * UVT;
       const t = clamp((h - minH) / range, 0, 1);
       tmpC.copy(cLow).lerp(cHigh, Math.pow(t, 0.8));
       cols[k] = tmpC.r; cols[k + 1] = tmpC.g; cols[k + 2] = tmpC.b;
@@ -618,6 +733,7 @@ function buildTerrain(P) {
   const geo = new THREE.BufferGeometry();
   geo.setAttribute('position', new THREE.BufferAttribute(verts, 3));
   geo.setAttribute('color', new THREE.BufferAttribute(cols, 3));
+  geo.setAttribute('uv', new THREE.BufferAttribute(uvs, 2));
   geo.setIndex(idx);
   geo.computeVertexNormals();
   // Ensure normals face up; if the winding produced downward normals, flip indices.
@@ -631,7 +747,9 @@ function buildTerrain(P) {
       geo.computeVertexNormals();
     }
   }
-  const mat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 1.0, metalness: 0.0, flatShading: false });
+  const detail = terrainDetailTextures();
+  const mat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 1.0, metalness: 0.0, flatShading: false,
+    map: detail.map, normalMap: detail.normalMap, normalScale: new THREE.Vector2(0.45, 0.45) });
   const mesh = new THREE.Mesh(geo, mat);
   // A2: terrain only RECEIVES shadows. Casting its ~40k tris into the shadow map every frame is the
   // biggest shadow-pass cost; dune self-shadowing is subtle and the sun sits high. Casters (car, rocks,
@@ -1225,7 +1343,7 @@ function updateVehicleLights(v, dt) {
   const playing = gameState === 'playing';
   const braking = playing && pressed('KeyS', 'ArrowDown') && forwardSpeedOf(v) > 0.5;
   const reversing = playing && forwardSpeedOf(v) < -0.5;
-  const auto = currentMap ? !!currentMap.darkLights : false;
+  const auto = darkNow();
   const on = headlightsManual === null ? auto : headlightsManual;
   for (const m of L.tail) m.material.emissiveIntensity = damp(m.material.emissiveIntensity, braking ? 2.2 : (on ? 0.5 : 0.15), 14, dt);
   for (const m of L.tail) m.material.emissive.setHex(braking ? 0xff2a2a : 0x6a0e0e);
@@ -1811,6 +1929,7 @@ window.addEventListener('keydown', (e) => {
     const auto = currentMap ? !!currentMap.darkLights : false;
     headlightsManual = (headlightsManual === null ? !auto : !headlightsManual);
   }
+  if (e.code === 'KeyN' && !e.repeat) { nightTarget = nightTarget > 0.5 ? 0 : 1; } // B2: toggle day/night
 });
 
 // ------------------------------------------------------------------ [SETTINGS]
@@ -2191,6 +2310,7 @@ function animate(now) {
   fxParticles.update(dt);
   fxTracks.update(dt);
   updateVehicleLights(player, dt);
+  if (Math.abs(nightFactor - nightTarget) > 0.0005) { nightFactor = damp(nightFactor, nightTarget, 1.6, dt); applyNight(nightFactor); } // B2
   updateSunFollow(player.chassisBody.position.x, player.chassisBody.position.z);
 
   updateCamera(player, dt, now);
@@ -2303,6 +2423,7 @@ Object.assign(DBG, {
   selection, startGame, openMenu, pauseGame, resumeGame, selectMap, selectVeh,
   fxParticles, fxTracks, addShake, audio, touch, enterFullscreenMaybe,
   setSurface: (s) => { currentSurfaceAt = () => s; }, // test hook
+  setNight: (v) => { nightTarget = v; nightFactor = v; applyNight(v); }, // B2 test hook
   setCamMode: (m) => { camMode = m; },
   setPost: (on) => { POST_ENABLED = on; },
   composer, bloomPass,
